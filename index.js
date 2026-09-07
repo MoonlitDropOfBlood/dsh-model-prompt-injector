@@ -102,6 +102,16 @@ function sanitizeRule(input) {
   return { key: ruleKey(provider, model), provider, model, prompt, updatedAt };
 }
 
+/** Defensive path navigation over a plain settings value (never throws). */
+function getPath(value, path) {
+  let node = value;
+  for (const key of path) {
+    if (node === null || typeof node !== "object") return undefined;
+    node = node[key];
+  }
+  return node;
+}
+
 /** Best-effort error text. */
 function errText(e) {
   return e && typeof e.message === "string" ? e.message : String(e);
@@ -280,12 +290,68 @@ export class ModelPromptInjectorService extends TypertRemoteService {
    * provider directory, keep entries whose settings namespace is registered
    * and whose settingsPath resolves, then read each entry's model list at
    * `[...settingsPath, "models"]`. Active routes (a mounted adapter) are
-   * flagged via `llm.listProviders()`.
-   *
-   * Commit-2 stub: filled in with the real enumeration in a later commit.
+   * flagged via `llm.listProviders()`. Only detached leaf values cross the
+   * wire; a missing `llm`/`settings` registry degrades to an empty list.
    */
   _directory() {
-    return [];
+    const out = [];
+    const llm = this.ctx.get("llm");
+    if (llm === undefined) return out;
+    const settings = this.ctx.get("settings");
+    const active = new Set();
+    try {
+      for (const info of llm.listProviders()) {
+        if (info && typeof info.id === "string") active.add(info.id);
+      }
+    } catch (e) {
+      /* an empty active set only affects the badge */
+    }
+    let entries = [];
+    try {
+      entries = llm.listConfigurableProviders();
+    } catch (e) {
+      return out;
+    }
+    for (const entry of entries) {
+      try {
+        const settingsPath = Array.isArray(entry.settingsPath) ? entry.settingsPath : [];
+        let value;
+        if (settings !== undefined) {
+          try {
+            value = settings.get(entry.settingsNs);
+          } catch (e) {
+            value = undefined;
+          }
+        }
+        const configured =
+          value !== undefined && (settingsPath.length === 0 || getPath(value, settingsPath) !== undefined);
+        if (!configured) continue;
+        const rawModels = getPath(value, settingsPath.concat(["models"]));
+        const models = [];
+        if (Array.isArray(rawModels)) {
+          for (const item of rawModels) {
+            if (item && typeof item === "object" && typeof item.id === "string" && item.id.length > 0) {
+              models.push({
+                id: item.id,
+                name: typeof item.name === "string" && item.name.length > 0 ? item.name : item.id,
+              });
+            }
+          }
+        }
+        out.push({
+          provider: String(entry.provider),
+          displayName:
+            typeof entry.displayName === "string" && entry.displayName.length > 0
+              ? entry.displayName
+              : String(entry.provider),
+          active: active.has(entry.provider),
+          models,
+        });
+      } catch (e) {
+        /* one unreadable entry does not sink the directory */
+      }
+    }
+    return out;
   }
 }
 
