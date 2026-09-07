@@ -39,6 +39,15 @@ window.__ModuleLoader__.load({
 .mpi-empty{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px}
 .mpi-error{margin:4px 0 0;color:var(--dsw-alias-state-error-primary);font-size:12px}
 .mpi-headrow{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mpi-row{border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px;padding-bottom:2px}
+.mpi-row-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mpi-row-title{display:flex;align-items:baseline;gap:8px;min-width:0;flex-wrap:wrap}
+.mpi-badge{font-size:11px;padding:1px 8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2)}
+.mpi-preview{margin:6px 0 0;font-size:12px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.mpi-editor{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.mpi-textarea{font:inherit;font-size:13px;line-height:1.6;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;resize:vertical;min-height:96px}
+.mpi-textarea:focus{outline:none;border-color:var(--dsw-alias-border-l3)}
+.mpi-actions{display:flex;gap:8px;align-items:center}
 `;
 
     // ---- Client Remote contribution -------------------------------------------
@@ -123,10 +132,160 @@ window.__ModuleLoader__.load({
 
       const h = React.createElement;
 
+      /** Map rule key -> rule for O(1) row lookups. */
+      function rulesByKey(rules) {
+        const map = {};
+        for (let i = 0; i < rules.length; i++) {
+          const rule = rules[i];
+          if (rule && typeof rule.key === "string") map[rule.key] = rule;
+        }
+        return map;
+      }
+
+      // ---- rule editor (one row's textarea + actions) -------------------------
+
+      function RuleEditor(props) {
+        const [draft, setDraft] = React.useState(props.initial);
+        const [busy, setBusy] = React.useState(false);
+        const [error, setError] = React.useState("");
+        const save = function (prompt) {
+          setBusy(true);
+          setError("");
+          remote
+            .setRule({ provider: props.provider, model: props.model, prompt })
+            .then((res) => {
+              setBusy(false);
+              const value = pick(res) || {};
+              props.onSaved(Array.isArray(value.rules) ? value.rules : []);
+            })
+            .catch((e) => {
+              setBusy(false);
+              setError(e && e.message ? e.message : String(e));
+            });
+        };
+        return h(
+          "div",
+          { className: "mpi-editor" },
+          h("textarea", {
+            className: "mpi-textarea",
+            value: draft,
+            placeholder: "输入要追加到系统提示词末尾的内容…",
+            onChange: (event) => setDraft(event.target.value),
+          }),
+          error ? h("p", { className: "mpi-error" }, error) : null,
+          h(
+            "div",
+            { className: "mpi-actions" },
+            h(ui.Button, { variant: "primary", size: "sm", disabled: busy, onClick: () => save(draft) }, "保存"),
+            props.initial.length > 0
+              ? h(ui.Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => save("") }, "清除规则")
+              : null,
+            h(ui.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: props.onCancel }, "取消"),
+          ),
+        );
+      }
+
+      // ---- one rule row (provider-wide or one model) --------------------------
+
+      function RuleRow(props) {
+        const rule = props.rule;
+        const has = !!(rule && typeof rule.prompt === "string" && rule.prompt.length > 0);
+        return h(
+          "div",
+          { className: "mpi-row" },
+          h(
+            "div",
+            { className: "mpi-row-head" },
+            h(
+              "div",
+              { className: "mpi-row-title" },
+              h("span", null, props.title),
+              h("span", { className: "mpi-id" }, props.subtitle),
+              has ? h("span", { className: "mpi-badge" }, "已注入") : null,
+            ),
+            h(
+              ui.Button,
+              { variant: "ghost", size: "sm", onClick: () => props.onToggle(props.rowKey) },
+              props.open ? "收起" : has ? "编辑" : "添加提示词",
+            ),
+          ),
+          has && !props.open ? h("div", { className: "mpi-preview" }, rule.prompt) : null,
+          props.open
+            ? h(RuleEditor, {
+                provider: props.provider,
+                model: props.model,
+                initial: has ? rule.prompt : "",
+                onSaved: (rules) => {
+                  props.onSaved(rules);
+                  props.onToggle(props.rowKey);
+                },
+                onCancel: () => props.onToggle(props.rowKey),
+              })
+            : null,
+        );
+      }
+
+      // ---- one provider card ---------------------------------------------------
+
+      function ProviderCard(props) {
+        const info = props.info;
+        const rows = [];
+        const wildKey = info.provider + "/*";
+        rows.push(
+          h(RuleRow, {
+            key: wildKey,
+            rowKey: wildKey,
+            provider: info.provider,
+            model: "*",
+            title: "所有模型（服务商级）",
+            subtitle: wildKey,
+            rule: props.ruleMap[wildKey],
+            open: props.openKey === wildKey,
+            onToggle: props.onToggle,
+            onSaved: props.onSaved,
+          }),
+        );
+        const models = Array.isArray(info.models) ? info.models : [];
+        for (let i = 0; i < models.length; i++) {
+          const m = models[i];
+          const key = info.provider + "/" + m.id;
+          rows.push(
+            h(RuleRow, {
+              key,
+              rowKey: key,
+              provider: info.provider,
+              model: m.id,
+              title: m.name && m.name.length > 0 ? m.name : m.id,
+              subtitle: m.id,
+              rule: props.ruleMap[key],
+              open: props.openKey === key,
+              onToggle: props.onToggle,
+              onSaved: props.onSaved,
+            }),
+          );
+        }
+        return h(
+          "section",
+          { className: "mpi-provider" },
+          h(
+            "header",
+            { className: "mpi-provider-head" },
+            h("span", { className: "mpi-provider-name" }, info.displayName && info.displayName.length > 0 ? info.displayName : info.provider),
+            h("span", { className: "mpi-id" }, info.provider),
+            h("span", { className: "mpi-state " + (info.active ? "mpi-state-on" : "mpi-state-off") }, info.active ? "运行中" : "未激活"),
+          ),
+          rows,
+          models.length === 0
+            ? h("p", { className: "mpi-empty" }, "该服务商的设置中未找到 models 列表，可使用上方的服务商级规则。")
+            : null,
+        );
+      }
+
       // ---- settings page (settings.section) -----------------------------------
 
       function Section() {
         const [state, setState] = React.useState({ loading: true, rules: [], providers: [], error: "" });
+        const [openKey, setOpenKey] = React.useState("");
 
         const load = function () {
           remote
@@ -147,6 +306,13 @@ window.__ModuleLoader__.load({
 
         React.useEffect(load, []);
 
+        const applyRules = function (rules) {
+          setState((current) => ({ loading: false, rules, providers: current.providers, error: "" }));
+        };
+        const toggle = function (key) {
+          setOpenKey((current) => (current === key ? "" : key));
+        };
+
         let body;
         if (state.loading) {
           body = h("p", { className: "mpi-empty" }, "正在读取本地模型配置…");
@@ -155,7 +321,17 @@ window.__ModuleLoader__.load({
         } else if (state.providers.length === 0) {
           body = h("p", { className: "mpi-empty" }, "未找到本地已配置的服务商，请先在「模型」设置中添加服务商与模型。");
         } else {
-          body = h("p", { className: "mpi-empty" }, "已加载 " + state.providers.length + " 个服务商。");
+          const ruleMap = rulesByKey(state.rules);
+          body = state.providers.map((info) =>
+            h(ProviderCard, {
+              key: info.provider,
+              info,
+              ruleMap,
+              openKey,
+              onToggle: toggle,
+              onSaved: applyRules,
+            }),
+          );
         }
 
         return h(
