@@ -1,0 +1,5 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+# Only an insert row — this plugin owns no config overrides.
+- insert:
+  - id: model-prompt-injector
+    name: '@duke-dsh-plugins/dsh-model-prompt-injector'
