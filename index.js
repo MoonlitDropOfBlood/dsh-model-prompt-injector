@@ -143,6 +143,50 @@ export class ModelPromptInjectorService extends TypertRemoteService {
     this._rules = [];
 
     await this._loadPersisted();
+
+    // The injection itself: one dynamic section in the ROOT scope, so every
+    // agent's per-step assembly (main sessions, subagents, workflow children)
+    // evaluates it. `ctx.inject` mounts the contribution only while the
+    // systemPrompt registry is composed and unwinds cleanly with it.
+    this.ctx.inject(["systemPrompt"], (scope) => {
+      scope.systemPrompt.section({
+        name: SECTION_NAME,
+        order: SECTION_ORDER,
+        text: (context) => this._extraPrompt(context),
+      });
+    });
+  }
+
+  // ---- injection --------------------------------------------------------------
+
+  /**
+   * Section text, evaluated before every model step. The runtime assembly
+   * context carries the agent (`assembleContextFor` returns
+   * `{ agent, scope, signal }`), and `agent.options.provider/model` is the
+   * route the upcoming request targets — the same source the loop builds the
+   * (deep-frozen) request header from, so matching here is exact. Returns ""
+   * for unmatched routes: the prompt renderer drops empty sections, so
+   * unmatched models pay nothing. Never throws — a section evaluation failure
+   * would otherwise poison the whole assembly.
+   */
+  _extraPrompt(context) {
+    try {
+      const agent = context ? context.agent : undefined;
+      const options = agent ? agent.options : undefined;
+      if (!options) return "";
+      const provider = options.provider;
+      const model = options.model;
+      if (typeof provider !== "string" || provider.length === 0) return "";
+      if (typeof model !== "string" || model.length === 0) return "";
+      const parts = [];
+      for (const rule of this._rules) {
+        if (rule.provider !== provider) continue;
+        if (rule.model === "*" || rule.model === model) parts.push(rule.prompt);
+      }
+      return parts.join("\n\n");
+    } catch (e) {
+      return "";
+    }
   }
 
   // ---- persistence ----------------------------------------------------------
