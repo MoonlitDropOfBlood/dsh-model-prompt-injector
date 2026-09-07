@@ -1,0 +1,114 @@
+name: Release
+
+# 打 v* 标签（如 v1.0.0）时构建插件包、发布 npm（OIDC Trusted Publishing）并发布 GitHub Release。
+# 前置：npmjs.com 包设置中配置 trusted publisher（本仓库 + .github/workflows/release.yml）。
+# GitHub Release 需要仓库 secret：GH_TOKEN（PAT，contents:write）；缺省时回落 GITHUB_TOKEN。
+# 也支持手动触发（workflow_dispatch）构建产物但不发布（仅 artifact）。
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Package plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Syntax check
+        run: |
+          node --check index.js
+          node --check client.js
+          node --check typert.host.js
+
+      - name: Package tarball
+        run: npm pack
+        env:
+          npm_config_package_lock: "false"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-tarball
+          path: ./*.tgz
+
+  publish-npm:
+    # npm OIDC Trusted Publishing (no static token / no OTP). Requires npm
+    # CLI >= 11.5.1 and Node >= 22.14 (Node 24 bundles npm 11). Configure the
+    # trusted publisher on npmjs.com for this package first (repo
+    # MoonlitDropOfBlood/dsh-model-prompt-injector +
+    # .github/workflows/release.yml), then every v* tag push publishes to npm
+    # automatically. Idempotent: an already-published version is skipped.
+    name: Publish to npm (Trusted Publishing)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install
+      - name: Publish (skip if version already exists)
+        run: |
+          if npm view "$(node -p "require('./package.json').name")@$(node -p "require('./package.json').version")" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
+            echo "Version already published, skipping."
+          else
+            npm publish
+          fi
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## ${{ github.ref_name }}
+
+            dsh-model-prompt-injector — DeepSeek Harness 按模型注入系统提示词插件。
+
+            ### 功能
+            - 按 `provider/model` 精确匹配（或 `provider/*` 服务商级通配）把提示词追加到系统提示词末尾，对主会话与子代理同样生效。
+            - 设置 →「模型提示词」页逐模型管理：自动列出本地已配置的服务商与模型，添加/编辑/清除即时生效。
+            - 规则持久化在 `<DSH_HOME>/model-prompt-injector/config.json`，重启不丢。
+
+            ### 📦 安装（标准 DSH bundle）
+            ```bash
+            dsh plugin --profile web add @duke-dsh-plugins/dsh-model-prompt-injector --registry=https://registry.npmjs.org
+            # 重启 DSH 后，设置面板出现「模型提示词」页
+            ```
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
