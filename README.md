@@ -43,7 +43,7 @@ dsh plugin --profile web remove @duke-dsh-plugins/dsh-model-prompt-injector
 
 ## 实现要点
 
-- 注入基于 `systemPrompt` 服务的**动态段落**：段落文本是每次模型 step 组装时求值的函数，运行时组装上下文携带 `agent`，从 `agent.options.provider/model` 取到本次请求的目标路由做规则匹配；未命中返回空串，渲染器自动丢弃空段落（零开销）。
+- 注入基于 `systemPrompt` 服务的**动态段落**：段落文本是每次模型 step 组装时求值的函数，运行时组装上下文携带 `agent`，按宿主模型选择层的同一优先级解析本次请求的目标路由（UI 选择的模型 → 已记录请求头 → 创建时 options，DSH 0.1.5+ 下 `agent.options` 只是创建时快照）做规则匹配；未命中返回空串，渲染器自动丢弃空段落（零开销）。
 - 规则读写走插件自有的 Typert Remote 服务（`modelPromptInjector.getState / setRule`），Client 经 `ctx.remote.$mount` 自挂载命名空间后调用。
 
 ## 开发

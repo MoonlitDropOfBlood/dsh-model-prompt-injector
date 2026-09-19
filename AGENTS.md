@@ -26,7 +26,7 @@ dsh-model-prompt-injector/
 ### 1. 注入点：systemPrompt 动态段落（不是 llm/stream）
 
 - Host 在 `[Service.init]` 里 `this.ctx.inject(["systemPrompt"], scope => scope.systemPrompt.section({ name: "model-prompt-injector:extra", order: 9950, text: (context) => this._extraPrompt(context) }))`。`ctx.inject` 让段落在 systemPrompt 注册表缺席时自动卸载、恢复时重挂。
-- **运行时 `context.agent.options.provider/model` 就是本次请求的目标路由**：agent loop 组装系统提示词时调用 `assembleContextFor(agent, signal)`，返回 `{ agent, scope, signal }`（见宿主 `dsh-agent/lib/types/dispatch.js`）；同一份 options 之后被用来构建请求头，所以按它匹配是精确的。官方变量 `{{provider}}/{{model}}` 和 dsh-agent-approval 的 policy context 都读这同一个字段。
+- **运行时路由来源（0.1.5+ 已变更）**：宿主新增模型选择层（`installModelSelection`，见 dsh-agent）用 `agent/request` waterfall 把请求路由覆盖为「UI 选择 → 已记录请求头 → 默认模型」；**`agent.options.provider/model` 只是创建时快照，UI 里切换模型或默认模型变更后与真实路由分叉**。插件 `_resolveRoute` 按同一优先级解析：① `sessionProjections.stateOf(session,"modelSelection").pending`（UI 选择，持久化镜像）② `session.requestHeader().config`（已记录实际路由）③ `agent.options`（无选择层的 subagent/SDK/workflow 子代理的真是路由）。**不要直接读 `agentDefaultModel.currentSelection()` 做默认回退**——会误伤无选择层的代理（把默认模型的规则注入到别的路由）。
 - **段落 order = 9950**：内置 `SECTION_ORDERS` 最大是 `STRUCTURED_OUTPUT = 9900`（见宿主 `dsh-system-prompt/lib/index.js`），9950 使规则文本落在系统提示词**最末尾**。
 - 未命中返回 `""`：`renderPrompt` 会丢弃空文本段落，未命中路由零开销。`_extraPrompt` **绝不能抛异常**（会毒化整次组装），全程 try/catch 兜底返回空串。
 - **不要试图在 `llm/stream` waterfall 里改请求**：agent loop 发出的请求带 `markAgentLoopRequest` 标记且 **deep-frozen**，任何修改都会抛错——这是刻意设计（请求内容必须是会话日志的纯函数）。
@@ -82,6 +82,14 @@ npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@
 ```
 
 宿主版本从桌面安装目录的 `.pnpm` 仓查（`dsh\node_modules\.pnpm`）。
+
+### 7. DSH 0.1.5-rc.2 兼容性（2026-09-16/17 验证）
+
+- 注入链路在 0.1.5-rc.2 下**端到端可用**。typert-protocol 0.1.2-rc.1 与 0.1.5-rc.2 的 `lib/index.js` **逐字节相同**，本地旧副本可继续工作。
+- **调试盲区（重要）**：`Service.listService` 服务目录**不枚举 TypertRemoteService 子类**——`pluginInventory`、`modelPromptInjector` 这类服务即使完全正常也查不到（曾被误判为"插件未加载"）。判定插件是否存活的正确方法：① HTTP RPC 调 `pluginInventory/list`（查 `include:model-prompt-injector` 行 enabled=true 且 fiberPhase=active）；② 直接调 `modelPromptInjector/getState`（返回规则表即证明服务+init 完成）。RPC 调用法：先 `GET /?token=<launchToken>` 换 cookie，再 `POST /api/<namespace>/<method>`，body `{type:"client-request", rpcId, method, payload:{args:{}}}`。launchToken 在桌面日志 `dsh-desktop-main.log` 的 URL 里。
+- 加载时序：带 `--expose-internals` 启动时插件行**延迟激活**（约 3–15s，`_loadPersisted` 的 await 让出事件循环），属正常现象，勿误判为未加载。
+- `AssembleContext` 类型已改为 `{ scope?, signal? }`，**不再声明 `agent` 字段**；但运行时 `assembleContextFor` 仍返回 `agent`（官方 `{{provider}}/{{model}}` 变量也仍读 `context.agent?.options.provider`），机制未变——只是类型上属于未声明字段，升级宿主时留意。
+- `peerDependencies` 的 typert-protocol 范围必须覆盖当前宿主（现已加 `^0.1.5-rc.2`），否则新装/升级时 pnpm peer 校验会拒装。
 
 ## 发布
 

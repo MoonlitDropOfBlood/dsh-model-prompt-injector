@@ -14,10 +14,13 @@
  *      section, so rule text lands at the END of the system prompt). The
  *      section text is a function evaluated before EVERY model step; the
  *      runtime assembly context carries the agent (`assembleContextFor`
- *      returns `{ agent, scope, signal }`), so `context.agent.options`
- *      tells the exact provider/model the upcoming request targets. Rules
- *      matching that route are joined and returned; unmatched routes return
- *      "" and the prompt renderer drops empty sections entirely.
+ *      returns `{ agent, scope, signal }`). The route the upcoming request
+ *      targets is resolved from the model-selection chain (pending UI
+ *      selection → last logged request header → creation-time options),
+ *      because since DSH 0.1.5 `agent.options` alone diverges from the real
+ *      route whenever the user picks a model in the UI. Rules matching that
+ *      route are joined and returned; unmatched routes return "" and the
+ *      prompt renderer drops empty sections entirely.
  *
  *   2. PERSIST — rules live in `<DSH_HOME>/model-prompt-injector/config.json`
  *      (outside any profile's node_modules, so reinstalls and upgrades never
@@ -172,31 +175,84 @@ export class ModelPromptInjectorService extends TypertRemoteService {
   /**
    * Section text, evaluated before every model step. The runtime assembly
    * context carries the agent (`assembleContextFor` returns
-   * `{ agent, scope, signal }`), and `agent.options.provider/model` is the
-   * route the upcoming request targets — the same source the loop builds the
-   * (deep-frozen) request header from, so matching here is exact. Returns ""
+   * `{ agent, scope, signal }`); the route the upcoming request actually
+   * targets is resolved by {@link _resolveRoute} — the same chain the host's
+   * model-selection layer uses, because since DSH 0.1.5 `agent.options` is
+   * only the creation-time snapshot and diverges from the real route whenever
+   * the user picks a model in the UI or the default changes later. Returns ""
    * for unmatched routes: the prompt renderer drops empty sections, so
    * unmatched models pay nothing. Never throws — a section evaluation failure
    * would otherwise poison the whole assembly.
    */
   _extraPrompt(context) {
     try {
-      const agent = context ? context.agent : undefined;
-      const options = agent ? agent.options : undefined;
-      if (!options) return "";
-      const provider = options.provider;
-      const model = options.model;
-      if (typeof provider !== "string" || provider.length === 0) return "";
-      if (typeof model !== "string" || model.length === 0) return "";
+      const route = this._resolveRoute(context ? context.agent : undefined);
+      if (!route) return "";
       const parts = [];
       for (const rule of this._rules) {
-        if (rule.provider !== provider) continue;
-        if (rule.model === "*" || rule.model === model) parts.push(rule.prompt);
+        if (rule.provider !== route.provider) continue;
+        if (rule.model === "*" || rule.model === route.model) parts.push(rule.prompt);
       }
       return parts.join("\n\n");
     } catch (e) {
       return "";
     }
+  }
+
+  /**
+   * Resolve the provider/model route the upcoming request will target, in the
+   * same precedence the host's model-selection layer applies to requests
+   * (api-session-controller `selectionFor().current`):
+   *
+   *   1. a pending UI selection — the durable `modelSelection` session
+   *      projection's `pending` (set by the UI, cleared once a matching
+   *      request header is logged);
+   *   2. the last logged request header's config — the actual route the
+   *      session is already on (for agents without the selection layer this
+   *      equals their options anyway);
+   *   3. the agent's creation-time options — the real route for agents that
+   *      never install the selection layer (subagents, SDK, workflow
+   *      children), and equal to the configured default for fresh web
+   *      sessions (the controller seeds options from
+   *      `agentDefaultModel.currentSelection()`).
+   *
+   * The configured default is deliberately NOT consulted directly: for
+   * layer-less agents it would inject the default provider's rules into a
+   * session actually routed elsewhere. Every step is defensive; the function
+   * never throws and returns undefined only when no route is knowable.
+   */
+  _resolveRoute(agent) {
+    // 1. Pending UI selection (durable mirror of the controller's picked).
+    const projections = this.ctx.get("sessionProjections");
+    if (projections !== undefined && agent && agent.session) {
+      try {
+        const state = projections.stateOf(agent.session, "modelSelection");
+        const pending = state ? state.pending : undefined;
+        if (pending && typeof pending.provider === "string" && pending.provider.length > 0 && typeof pending.model === "string" && pending.model.length > 0) {
+          return { provider: pending.provider, model: pending.model };
+        }
+      } catch (e) {
+        /* projection missing or unreadable — fall through */
+      }
+    }
+    // 2. Last logged request route.
+    if (agent && agent.session && typeof agent.session.requestHeader === "function") {
+      try {
+        const header = agent.session.requestHeader();
+        const config = header ? header.config : undefined;
+        if (config && typeof config.provider === "string" && config.provider.length > 0 && typeof config.model === "string" && config.model.length > 0) {
+          return { provider: config.provider, model: config.model };
+        }
+      } catch (e) {
+        /* unreadable header — fall through */
+      }
+    }
+    // 3. Creation-time options (the real route for layer-less agents).
+    const options = agent ? agent.options : undefined;
+    if (options && typeof options.provider === "string" && options.provider.length > 0 && typeof options.model === "string" && options.model.length > 0) {
+      return { provider: options.provider, model: options.model };
+    }
+    return undefined;
   }
 
   // ---- persistence ----------------------------------------------------------
