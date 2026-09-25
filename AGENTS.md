@@ -27,7 +27,7 @@ dsh-model-prompt-injector/
 ### 1. 注入点：首次系统提示词 + 切换时通知（不是每 step 重复注入）
 
 - Host 在 `[Service.init]` 里 `this.ctx.inject(["systemPrompt"], scope => { … })` 做两件事，生命周期与 systemPrompt 注册表绑定：
-  1. **注册一个动态段落**（`model-prompt-injector:extra`，order 9950——内置 `SECTION_ORDERS` 最大 `STRUCTURED_OUTPUT = 9900`，见宿主 `dsh-system-prompt/lib/index.js`，9950 落在系统提示词最末尾）；
+  1. **注册一个动态段落**（`model-prompt-injector:extra`，order 10250——0.1.7-rc.2 内置 `SECTION_ORDERS` 最大 `DEPLOYMENT_PERSONA_SUFFIX = 10200`（rc.2 新增 `WEB_SURFACE = 10100`），见宿主 `dsh-system-prompt/lib/index.js`，10250 落在系统提示词最末尾；0.1.5～0.1.7-rc.1 时代最大值是 `STRUCTURED_OUTPUT = 9900`、当时用 9950 即末尾，rc.2 起 order 升为 10250）；
   2. **注册 `agent/pre-step` 监听器**（root scope）做切换期投递。
 - **投递状态机**（`this._delivered`，WeakMap keyed by 运行时 agent 对象，agent 回收自动清理）：
   - agent 的**首次**命中 → 规则文本由**系统提示词段落**投递（`_extraPrompt` 返回文本并记录 `{route, text}`）；
@@ -106,7 +106,15 @@ npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@
 - **加载不上的根因**：0.1.7-rc.1 携带 typert-protocol `0.1.7-rc.1` 与 cordis `~4.0.4`，旧 peer 范围（typert `… || ^0.1.5-rc.2`、cordis `4.0.1 || 4.0.2`）均不满足（semver 实测 false），pnpm peer 校验直接拒装。修复：typert 加 `|| ^0.1.7-rc.1`、cordis 改 `^4.0.1`。
 - **API 面核实**（npm pack 0.1.7-rc.1 包逐文件对比本机 0.1.5-rc.3）：typert-protocol `Remote` 装饰器/`TypertRemoteService(ctx, key)`/`addMarkerInitializer` 全兼容（纯新增 owned-value/json-value）；system-prompt `section({name,order,text})` 不变、`STRUCTURED_OUTPUT=9900` 仍为最大 order（新增 3e3/3100 均小于它，9950 仍在末尾），新增 `interpolate:false` 不影响本插件；session-projection `lib/index.js` **逐字节相同**；cordis 4.0.4 仅内部重构，`Service`/`ctx.inject` 未动。无需改代码。
 - **dshmarket 版本声明**（dshmarket 1.48.0 `lib/discovery-compatibility.js` 核实）：市场按需拉 npm latest manifest 缓存 24h，读 `engines.dsh`（顶层优先）或 `dsh.engines.dsh`（严格 semver + includePrerelease）与 `@deepseek-ai/dsh*` peerDependencies（方向性判定；cordis/schemastery 不计），取交集显示"宿主要求 {range}"并驱动筛选与安装阻断。本插件已加 `"engines": { "dsh": ">=0.1.5-rc.2 <0.2.0" }`（npm/pnpm 对未知 engine key 只警告不拦截，安装无影响）。
-- semver 陷阱：prerelease（如 `0.1.7-rc.1`）**不满足**不含同 tuple prerelease 比较子的范围（`^0.1.5-rc.2` 不含）——peer 里每个新 rc 线必须显式加 `^0.1.x-rc.n`；engines.dsh 因市场用 includePrerelease 无此问题。
+- semver 陷阱：prerelease（如 `0.1.7-rc.1`）**不满足**不含同 tuple prerelease 比较子的范围（`^0.1.5-rc.2` 不含）——peer 里每个新 rc 线必须显式加 `^0.1.x-rc.n`；engines.dsh 因市场用 includePrerelease 无此问题。同 tuple 内的 rc.n 递进（rc.1 → rc.2）**不需要**新加比较子：`^0.1.7-rc.1` 展开后含 `>=0.1.7-rc.1` 同 tuple prerelease 比较子，rc.2 天然满足。
+
+### 9. DSH 0.1.7-rc.2 兼容性 + 误判「不兼容被卸载」事故复盘（2026-09-26 验证）
+
+- **结论：1.1.0 与 0.1.7-rc.2 完全兼容**。宿主唯一加载闸门 `evaluatePluginCompatibility`（`@deepseek-ai/dsh-app-boot/lib/index.js`，只查名为 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 的 peerDependencies，`semver.satisfies(runtime, req, {includePrerelease:true})`）对 1.1.0 manifest 返回 `issue: undefined`（用宿主自己的函数实测）。所有用到的 API（typert `TypertRemoteService`、dsh-llm `createUserMessage/listProviders/listConfigurableProviders`、system-prompt section、`installModelSelection`/sessionProjections）在 rc.2 全部存在。
+- **profiles 桥接目录（关键机制，本次新发现）**：`~/.dsh/profiles/node_modules/@deepseek-ai/*` 是一整套**指向宿主运行时的 Junction**（如 `cordis → …\DeepSeek Harness Desktop\dsh\node_modules\@deepseek-ai\cordis`）。registry 安装的插件位于 `<profile>/node_modules/<scope>/<pkg>`，Node 向上走 node_modules 时命中 `~/.dsh/profiles/node_modules`——**所有 `@deepseek-ai/*` 导入一律解析到正在运行的宿主副本，不存在双副本漂移**。这就是 registry 安装从不需要对齐依赖的原因；§6 的 link: 对齐仍然必要，因为 link: 插件在 workspace（桥接路径之外），向上解析走不到它。
+- **SECTION_ORDERS 变化（唯一真代码影响）**：rc.2 在 9900 之上新增 `WEB_SURFACE = 10100`、`DEPLOYMENT_PERSONA_SUFFIX = 10200`，order 9950 不再是末尾（1.1.0 的规则文本落在 web-surface/deployment-persona 段之前）。修复：SECTION_ORDER 9950 → **10250**（1.1.1）。
+- **事故链复盘**：9/25 18:27 桌面升级重启，新核心 spawn 后 **199ms 即 exit 1**（远早于插件加载完成的正常 3s+，恢复器 `parseBootFailure` 未归因任何插件 → 无 plugin-recovery 日志行），49s 后重试即成功——**且当时 profile package.json 里插件仍在**，即 0.1.7-rc.2 下插件实际正常加载运行了 16 分钟。02:44（本地）package.json/pnpm-lock 变更移除本插件与 dsh-token-stats，无任何自动化机制留痕（桌面日志/市场日志均无），判定为 UI 手动卸载。诱因：升级瞬间的一次性启动失败 + dshmarket 24h 发现缓存仍显示旧 manifest facts（v1.0.2），造成「不兼容」观感。**教训：判定兼容性用宿主 `evaluatePluginCompatibility` 实测，不要凭启动失败面板或市场徽标下结论。**
+- **dshmarket 发现缓存**：`<profile>/.dsh-market/discovery-compatibility-v1.json` 缓存 npm manifest facts 24h（conclusions 不缓存）。发布新版本后若市场徽标不更新，可删该文件强制刷新（schema 带版本号，安全）。
 
 ## 发布
 

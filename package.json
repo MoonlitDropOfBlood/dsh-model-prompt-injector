@@ -1,6 +1,6 @@
 {
   "name": "@duke-dsh-plugins/dsh-model-prompt-injector",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "为 DeepSeek Harness 中本地已配置的模型追加系统提示词：按 provider/model 精确匹配或服务商级通配（provider/*）注入到系统提示词末尾，设置面板逐模型管理，规则持久化、重启不丢。",
   "repository": {
     "type": "git",

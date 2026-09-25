@@ -10,7 +10,7 @@
  * What it does:
  *
  *   1. INJECT — registers ONE dynamic system-prompt section
- *      (`model-prompt-injector:extra`, order 9950 — after every shipped
+ *      (`model-prompt-injector:extra`, order 10250 — after every shipped
  *      section, so rule text lands at the END of the system prompt). The
  *      section text is a function evaluated before EVERY model step; the
  *      runtime assembly context carries the agent (`assembleContextFor`
@@ -56,11 +56,13 @@ import { join } from "node:path";
 /** The registered prompt section name (unique; nobody else shadows it). */
 const SECTION_NAME = "model-prompt-injector:extra";
 /**
- * Section placement: the shipped SECTION_ORDERS max out at
- * STRUCTURED_OUTPUT = 9900 (see @deepseek-ai/dsh-system-prompt), so 9950
- * appends rule text at the very end of the system prompt.
+ * Section placement: the shipped SECTION_ORDERS in DSH 0.1.7-rc.2 max out at
+ * DEPLOYMENT_PERSONA_SUFFIX = 10200 (WEB_SURFACE = 10100 was added in rc.2;
+ * previously the max was STRUCTURED_OUTPUT = 9900), so 10250 appends rule
+ * text at the very end of the system prompt (see
+ * @deepseek-ai/dsh-system-prompt/lib/index.js SECTION_ORDERS).
  */
-const SECTION_ORDER = 9950;
+const SECTION_ORDER = 10250;
 
 /**
  * On-disk persistence for the rule table. Lives under DSH_HOME, outside any
