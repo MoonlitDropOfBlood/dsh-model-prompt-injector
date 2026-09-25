@@ -12,6 +12,17 @@
  *
  * Result schemas are STRICT: every Host return value must match exactly
  * (fields present, types correct), or the gateway validation fails.
+ *
+ * Codec contract spans two host generations (same as client.js): 0.1.5 loads
+ * and parses through `codec.schema` (a zod v4 instance — the typert-loader
+ * checks `"_zod" in schema`, the gateway calls `codec.schema.parse`), while
+ * 0.1.7-rc.1+ requires a `codec.create()` FACTORY (the typert-loader's
+ * requireStrictCodec REJECTS any strict codec with no create() factory at
+ * startup, which aborts the typert registry build and takes OTHER services'
+ * remote methods down with it — e.g. llm/listProviders). Every codec below
+ * therefore carries BOTH fields: `schema` keeps 0.1.5 loading, `create`
+ * keeps 0.1.7 loading, and both generations parse through the same zod
+ * instance (same pattern as dsh-agent-approval 1.7.x / dsh-token-stats 1.5.x).
  */
 
 import { z } from "zod";
@@ -107,6 +118,7 @@ export const TYPERT = {
         mode: "strict",
         typeSymbol: "dsh-model-prompt-injector#ModelPromptInjectorStateResult",
         schema: stateResultSchema,
+        create: () => stateResultSchema,
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
@@ -125,6 +137,7 @@ export const TYPERT = {
             mode: "strict",
             typeSymbol: "dsh-model-prompt-injector#ModelPromptInjectorSetRuleRequest",
             schema: _modelPromptInjector_setRule_parameter_0$schema,
+            create: () => _modelPromptInjector_setRule_parameter_0$schema,
           },
         },
       ],
@@ -132,6 +145,7 @@ export const TYPERT = {
         mode: "strict",
         typeSymbol: "dsh-model-prompt-injector#ModelPromptInjectorSetRuleResult",
         schema: setRuleResultSchema,
+        create: () => setRuleResultSchema,
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
