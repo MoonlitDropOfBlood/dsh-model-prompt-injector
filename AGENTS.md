@@ -64,7 +64,7 @@ wire 变更必须三处一起改：
 2. `typert.host.js`：zod schema（**strict**，字段必须整形状）+ invocation + `model.services[].types` 声明；
 3. `client.js`：`CLIENT_REMOTE` 描述符（id/service/namespace/method 与 typert 一一对应）+ UI 调用。
 
-Client 侧 zod 不可用，codec 用 passthrough schema（`{ parse: (v) => v }`）；返回值经 `pick()` 做双层信封解包。
+Client 侧 zod 不可用，codec 用 passthrough schema（`{ parse: (v) => v }`）且**必须同时带 `create: () => schema` 工厂**（0.1.7-rc.1+ 的 client Remote 注册表校验 `create`，缺失时 `$mount` 抛 "strict codec has no create() factory"，见 §9）；返回值经 `pick()` 做双层信封解包。
 
 ### 5. Client 约定
 
@@ -110,7 +110,8 @@ npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@
 
 ### 9. DSH 0.1.7-rc.2 兼容性 + 误判「不兼容被卸载」事故复盘（2026-09-26 验证）
 
-- **结论：1.1.0 与 0.1.7-rc.2 完全兼容**。宿主唯一加载闸门 `evaluatePluginCompatibility`（`@deepseek-ai/dsh-app-boot/lib/index.js`，只查名为 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 的 peerDependencies，`semver.satisfies(runtime, req, {includePrerelease:true})`）对 1.1.0 manifest 返回 `issue: undefined`（用宿主自己的函数实测）。所有用到的 API（typert `TypertRemoteService`、dsh-llm `createUserMessage/listProviders/listConfigurableProviders`、system-prompt section、`installModelSelection`/sessionProjections）在 rc.2 全部存在。
+- **真正的 rc.1+ 不兼容点（client codec，1.1.1 修复）**：0.1.7-rc.1+ 的浏览器端 Remote 注册表校验 codec **必须携带 `create()` 工厂**（旧宿主 ≤ 0.1.5-rc.3 只要求 `schema.parse`），缺 `create` 时 `ctx.remote.$mount` 抛 `"strict codec has no create() factory"` → client 模块加载失败（宿主半不受影响，RPC 照常通——这正是此前误判「加载不上/不兼容」却查不到原因的盲区）。修复：每个 codec 同时带 `schema` 与 `create: () => schema`（同 dsh-agent-approval 1.7.0 的 `strictCodec` 模式）。**教训：宿主大版本升级时，client 侧 Remote codec 契约要与宿主侧 API 一起核对。**
+- **宿主半与 0.1.7-rc.2 兼容**。宿主唯一加载闸门 `evaluatePluginCompatibility`（`@deepseek-ai/dsh-app-boot/lib/index.js`，只查名为 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 的 peerDependencies，`semver.satisfies(runtime, req, {includePrerelease:true})`）对 1.1.x manifest 返回 `issue: undefined`（用宿主自己的函数实测）。所有用到的宿主 API（typert `TypertRemoteService`、dsh-llm `createUserMessage/listProviders/listConfigurableProviders`、system-prompt section、`installModelSelection`/sessionProjections）在 rc.2 全部存在。
 - **profiles 桥接目录（关键机制，本次新发现）**：`~/.dsh/profiles/node_modules/@deepseek-ai/*` 是一整套**指向宿主运行时的 Junction**（如 `cordis → …\DeepSeek Harness Desktop\dsh\node_modules\@deepseek-ai\cordis`）。registry 安装的插件位于 `<profile>/node_modules/<scope>/<pkg>`，Node 向上走 node_modules 时命中 `~/.dsh/profiles/node_modules`——**所有 `@deepseek-ai/*` 导入一律解析到正在运行的宿主副本，不存在双副本漂移**。这就是 registry 安装从不需要对齐依赖的原因；§6 的 link: 对齐仍然必要，因为 link: 插件在 workspace（桥接路径之外），向上解析走不到它。
 - **SECTION_ORDERS 变化（唯一真代码影响）**：rc.2 在 9900 之上新增 `WEB_SURFACE = 10100`、`DEPLOYMENT_PERSONA_SUFFIX = 10200`，order 9950 不再是末尾（1.1.0 的规则文本落在 web-surface/deployment-persona 段之前）。修复：SECTION_ORDER 9950 → **10250**（1.1.1）。
 - **事故链复盘**：9/25 18:27 桌面升级重启，新核心 spawn 后 **199ms 即 exit 1**（远早于插件加载完成的正常 3s+，恢复器 `parseBootFailure` 未归因任何插件 → 无 plugin-recovery 日志行），49s 后重试即成功——**且当时 profile package.json 里插件仍在**，即 0.1.7-rc.2 下插件实际正常加载运行了 16 分钟。02:44（本地）package.json/pnpm-lock 变更移除本插件与 dsh-token-stats，无任何自动化机制留痕（桌面日志/市场日志均无），判定为 UI 手动卸载。诱因：升级瞬间的一次性启动失败 + dshmarket 24h 发现缓存仍显示旧 manifest facts（v1.0.2），造成「不兼容」观感。**教训：判定兼容性用宿主 `evaluatePluginCompatibility` 实测，不要凭启动失败面板或市场徽标下结论。**

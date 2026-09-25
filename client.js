@@ -102,8 +102,25 @@ window.__ModuleLoader__.load({
     // mount its own. Mirrors the invocations in typert.host.js. zod is not
     // requirable in the browser module loader, so codecs use passthrough
     // schemas — the runtime contract only requires typeSymbol + schema.parse().
+    // The wire contract spans two host generations: the client Remote registry
+    // validates `codec.schema.parse` on DSH ≤ 0.1.5-rc.3 but a `codec.create()`
+    // factory on 0.1.7-rc.1+ ("strict codec has no create() factory" kills the
+    // mount), so every codec carries BOTH fields over the same passthrough
+    // schema (same pattern as dsh-agent-approval 1.7.0).
     const passthrough = () => ({ parse: (v) => v });
-    const result = (typeSymbol) => ({ mode: "strict", typeSymbol, schema: passthrough() });
+    const strictCodec = (typeSymbol) => {
+      const schema = passthrough();
+      return { mode: "strict", typeSymbol, schema, create: () => schema };
+    };
+    const param = (typeSymbol) => [
+      {
+        name: "request",
+        wire: "request",
+        source: "json",
+        codec: strictCodec(typeSymbol),
+      },
+    ];
+    const result = (typeSymbol) => strictCodec(typeSymbol);
     const CLIENT_REMOTE = {
       package: "dsh-model-prompt-injector",
       descriptors: [
@@ -122,18 +139,7 @@ window.__ModuleLoader__.load({
           namespace: "modelPromptInjector",
           method: "setRule",
           invocation: { kind: "direct" },
-          parameters: [
-            {
-              name: "request",
-              wire: "request",
-              source: "json",
-              codec: {
-                mode: "strict",
-                typeSymbol: "dsh-model-prompt-injector#ModelPromptInjectorSetRuleRequest",
-                schema: passthrough(),
-              },
-            },
-          ],
+          parameters: param("dsh-model-prompt-injector#ModelPromptInjectorSetRuleRequest"),
           result: result("dsh-model-prompt-injector#ModelPromptInjectorSetRuleResult"),
         },
       ],
