@@ -178,16 +178,6 @@ function sanitizeRule(input) {
   return { key: ruleKey(provider, model), provider, model, prompt, updatedAt };
 }
 
-/** Defensive path navigation over a plain settings value (never throws). */
-function getPath(value, path) {
-  let node = value;
-  for (const key of path) {
-    if (node === null || typeof node !== "object") return undefined;
-    node = node[key];
-  }
-  return node;
-}
-
 /** Best-effort error text. */
 function errText(e) {
   return e && typeof e.message === "string" ? e.message : String(e);
@@ -469,7 +459,7 @@ export class ModelPromptInjectorService extends TypertRemoteService {
    * configured providers/models (see _directory).
    */
   async getState() {
-    return { ok: true, value: { rules: this._rulesSnapshot(), providers: this._directory() } };
+    return { ok: true, value: { rules: this._rulesSnapshot(), providers: await this._directory() } };
   }
 
   /**
@@ -504,49 +494,32 @@ export class ModelPromptInjectorService extends TypertRemoteService {
   // ---- provider/model directory ---------------------------------------------
 
   /**
-   * The directory of LOCALLY CONFIGURED providers and their model catalogs,
-   * enumerated exactly like the Models settings page: walk the configurable
-   * provider directory, keep entries whose settings namespace is registered
-   * and whose settingsPath resolves, then read each entry's model list at
-   * `[...settingsPath, "models"]`. Active routes (a mounted adapter) are
-   * flagged via `llm.listProviders()`. Only detached leaf values cross the
-   * wire; a missing `llm`/`settings` registry degrades to an empty list.
+   * The directory of providers available for rule targeting, enumerated from
+   * the LIVE route registry (DSH 0.1.7+): `llm.listProviders()` names the
+   * registered provider routes and `llm.listModels(providerId)` returns each
+   * one's model catalog (the same join the official model catalog builds —
+   * see dsh-api-session-controller buildModelCatalog). Rules only ever apply
+   * to routes that actually serve requests, so the active set is the right
+   * universe; per-provider failures degrade that provider's model list to
+   * empty without sinking the directory. (The pre-0.1.7 enumeration through
+   * `settings.get(ns)` is gone: the 0.1.7 settings service no longer exposes
+   * namespace values, so that path returned nothing at all.)
    */
-  _directory() {
+  async _directory() {
     const out = [];
     const llm = this.ctx.get("llm");
     if (llm === undefined) return out;
-    const settings = this.ctx.get("settings");
-    const active = new Set();
+    let providers = [];
     try {
-      for (const info of llm.listProviders()) {
-        if (info && typeof info.id === "string") active.add(info.id);
-      }
-    } catch (e) {
-      /* an empty active set only affects the badge */
-    }
-    let entries = [];
-    try {
-      entries = llm.listConfigurableProviders();
+      providers = llm.listProviders();
     } catch (e) {
       return out;
     }
-    for (const entry of entries) {
+    for (const info of providers) {
+      if (!info || typeof info.id !== "string" || info.id.length === 0) continue;
+      const models = [];
       try {
-        const settingsPath = Array.isArray(entry.settingsPath) ? entry.settingsPath : [];
-        let value;
-        if (settings !== undefined) {
-          try {
-            value = settings.get(entry.settingsNs);
-          } catch (e) {
-            value = undefined;
-          }
-        }
-        const configured =
-          value !== undefined && (settingsPath.length === 0 || getPath(value, settingsPath) !== undefined);
-        if (!configured) continue;
-        const rawModels = getPath(value, settingsPath.concat(["models"]));
-        const models = [];
+        const rawModels = await llm.listModels(info.id);
         if (Array.isArray(rawModels)) {
           for (const item of rawModels) {
             if (item && typeof item === "object" && typeof item.id === "string" && item.id.length > 0) {
@@ -557,18 +530,15 @@ export class ModelPromptInjectorService extends TypertRemoteService {
             }
           }
         }
-        out.push({
-          provider: String(entry.provider),
-          displayName:
-            typeof entry.displayName === "string" && entry.displayName.length > 0
-              ? entry.displayName
-              : String(entry.provider),
-          active: active.has(entry.provider),
-          models,
-        });
       } catch (e) {
-        /* one unreadable entry does not sink the directory */
+        /* one unreadable catalog keeps its empty model list */
       }
+      out.push({
+        provider: info.id,
+        displayName: typeof info.name === "string" && info.name.length > 0 ? info.name : info.id,
+        active: true,
+        models,
+      });
     }
     return out;
   }

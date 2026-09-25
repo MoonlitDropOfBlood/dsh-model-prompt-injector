@@ -48,12 +48,12 @@ dsh-model-prompt-injector/
 - 匹配**大小写敏感**：模型 id 就是路由 id（如 `MiniMax-M3`），以「模型」设置页配置为准。
 - `setRule` 空白 prompt = 删除该条；任何规则变更即 `_persist()`（fire-and-forget，失败静默——持久化失败绝不影响注入与 UI）。
 
-### 3. 本地已配置模型枚举（与「模型」设置页同一逻辑）
+### 3. 本地已配置模型枚举（0.1.7 起改为活动路由 + listModels）
 
-- `llm.listConfigurableProviders()` 拿目录项 `{provider, displayName, settingsNs, settingsPath}`；`settings.get(ns)` 取解析值（命名空间未注册 = undefined = 未配置）。
-- 「已配置」判定：`settingsPath.length === 0 || getPath(value, settingsPath) !== undefined`。
-- 模型列表在 `[...settingsPath, "models"]`，数组项 `{id, name?, ...}`。
-- `llm.listProviders()` 的 id 集合用于「运行中/未激活」徽标。
+- **rc.2 起必须用 `llm.listProviders()`（活动路由）+ `await llm.listModels(providerId)`（模型目录，异步）**——与官方 `dsh-api-session-controller` 的 `buildModelCatalog` 同一 join。`_directory()` 因此是 async，getState 里 await。
+- **旧的 `settings.get(ns)` 路径在 0.1.7 已死**：settings 服务改为表单/schema 描述服务（configure/invalidate/prepareDocument/describe），不再暴露命名空间值；官方模型页改用 `dsh-api-settings-controller` 的镜像视图。继续调 `settings.get` 会 TypeError（被我们 try/catch 吞掉）→ 目录静默变空——正是「未找到本地已配置的服务商」事故的根因。
+- 语义变化：只列**活动** provider（有 adapter 的路由）。规则只对真正服务的路由生效，这是有意的收窄；`active` 恒为 true（字段保留兼容 typert schema）。
+- 0.1.5 时代的三件套（`llm.listConfigurableProviders()` 拿目录项 `{provider, displayName, settingsNs, settingsPath}`、`settings.get(ns)` 判已配置、`[...settingsPath, "models"]` 读模型）仅适用于 ≤ 0.1.5-rc.3；`listConfigurableProviders` 在 rc.2 仍在但新增 `declared` 字段且不再适合做已配置判定。
 - pi-ai 家族的路由 id 由用户 profile 键生成（如 `minimax-cn`、`zai-coding-cn`），**不要硬编码猜测**。
 
 ### 4. Remote 三处同步
