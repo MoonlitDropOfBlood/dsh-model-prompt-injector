@@ -55,10 +55,13 @@ npm run check   # node --check index.js client.js typert.host.js
 本地调试安装（link:，插件目录需已有 node_modules，见 AGENTS.md）：
 
 ```bash
-npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@4.0.2 @deepseek-ai/dsh-typert-protocol@0.1.2-rc.1 zod@4.5.4
+# 依赖版本对齐本机宿主（0.1.5-rc.x → cordis@4.0.2 + typert@0.1.5-rc.2；0.1.7-rc.1 → cordis@4.0.4 + typert@0.1.7-rc.1）
+npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@4.0.2 @deepseek-ai/dsh-typert-protocol@0.1.5-rc.2 zod@4.5.4
 dsh plugin --profile web add /path/to/dsh-model-prompt-injector
 # 重启 DSH 生效
 ```
+
+**宿主要求**：`engines.dsh` 声明 `>=0.1.5-rc.2 <0.2.0`（dshmarket 按此显示"宿主要求"并做安装适配判定）。
 
 ## 发布
 

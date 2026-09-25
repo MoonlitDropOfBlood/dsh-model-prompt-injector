@@ -91,6 +91,13 @@ npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@
 - `AssembleContext` 类型已改为 `{ scope?, signal? }`，**不再声明 `agent` 字段**；但运行时 `assembleContextFor` 仍返回 `agent`（官方 `{{provider}}/{{model}}` 变量也仍读 `context.agent?.options.provider`），机制未变——只是类型上属于未声明字段，升级宿主时留意。
 - `peerDependencies` 的 typert-protocol 范围必须覆盖当前宿主（现已加 `^0.1.5-rc.2`），否则新装/升级时 pnpm peer 校验会拒装。
 
+### 8. DSH 0.1.7-rc.1 兼容性 + dshmarket 版本声明（2026-09-25 验证）
+
+- **加载不上的根因**：0.1.7-rc.1 携带 typert-protocol `0.1.7-rc.1` 与 cordis `~4.0.4`，旧 peer 范围（typert `… || ^0.1.5-rc.2`、cordis `4.0.1 || 4.0.2`）均不满足（semver 实测 false），pnpm peer 校验直接拒装。修复：typert 加 `|| ^0.1.7-rc.1`、cordis 改 `^4.0.1`。
+- **API 面核实**（npm pack 0.1.7-rc.1 包逐文件对比本机 0.1.5-rc.3）：typert-protocol `Remote` 装饰器/`TypertRemoteService(ctx, key)`/`addMarkerInitializer` 全兼容（纯新增 owned-value/json-value）；system-prompt `section({name,order,text})` 不变、`STRUCTURED_OUTPUT=9900` 仍为最大 order（新增 3e3/3100 均小于它，9950 仍在末尾），新增 `interpolate:false` 不影响本插件；session-projection `lib/index.js` **逐字节相同**；cordis 4.0.4 仅内部重构，`Service`/`ctx.inject` 未动。无需改代码。
+- **dshmarket 版本声明**（dshmarket 1.48.0 `lib/discovery-compatibility.js` 核实）：市场按需拉 npm latest manifest 缓存 24h，读 `engines.dsh`（顶层优先）或 `dsh.engines.dsh`（严格 semver + includePrerelease）与 `@deepseek-ai/dsh*` peerDependencies（方向性判定；cordis/schemastery 不计），取交集显示"宿主要求 {range}"并驱动筛选与安装阻断。本插件已加 `"engines": { "dsh": ">=0.1.5-rc.2 <0.2.0" }`（npm/pnpm 对未知 engine key 只警告不拦截，安装无影响）。
+- semver 陷阱：prerelease（如 `0.1.7-rc.1`）**不满足**不含同 tuple prerelease 比较子的范围（`^0.1.5-rc.2` 不含）——peer 里每个新 rc 线必须显式加 `^0.1.x-rc.n`；engines.dsh 因市场用 includePrerelease 无此问题。
+
 ## 发布
 
 - 打 `v*` 标签推送 GitHub：`.github/workflows/release.yml` 三个 job——build（node --check + npm pack + artifact）→ publish-npm（**OIDC Trusted Publishing**，Node 24 + npm ≥ 11.5.1，无静态 token）→ GitHub Release（带 tgz）。
