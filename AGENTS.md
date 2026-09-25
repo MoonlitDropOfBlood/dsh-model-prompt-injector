@@ -15,6 +15,7 @@ dsh-model-prompt-injector/
 ├── client.js             # Client 半：window.__ModuleLoader__.load bundle（设置页 + Remote 调用）
 ├── typert.host.js        # Typert Host manifest：modelPromptInjector Remote 服务的 schema/调用描述
 ├── cordis.patch.yml      # dsh bundle patch（仅一行 insert 挂载，无 config 覆盖）
+├── test/                 # 投递状态机行为测试（loader 把三个宿主包重定向到 stubs，跑真实 index.js）
 ├── .github/workflows/release.yml  # 打 v* 标签：build+pack → npm OIDC → GitHub Release
 ├── AGENTS.md             # 本文件
 ├── README.md
@@ -23,19 +24,27 @@ dsh-model-prompt-injector/
 
 ## 关键机制
 
-### 1. 注入点：systemPrompt 动态段落（不是 llm/stream）
+### 1. 注入点：首次系统提示词 + 切换时通知（不是每 step 重复注入）
 
-- Host 在 `[Service.init]` 里 `this.ctx.inject(["systemPrompt"], scope => scope.systemPrompt.section({ name: "model-prompt-injector:extra", order: 9950, text: (context) => this._extraPrompt(context) }))`。`ctx.inject` 让段落在 systemPrompt 注册表缺席时自动卸载、恢复时重挂。
+- Host 在 `[Service.init]` 里 `this.ctx.inject(["systemPrompt"], scope => { … })` 做两件事，生命周期与 systemPrompt 注册表绑定：
+  1. **注册一个动态段落**（`model-prompt-injector:extra`，order 9950——内置 `SECTION_ORDERS` 最大 `STRUCTURED_OUTPUT = 9900`，见宿主 `dsh-system-prompt/lib/index.js`，9950 落在系统提示词最末尾）；
+  2. **注册 `agent/pre-step` 监听器**（root scope）做切换期投递。
+- **投递状态机**（`this._delivered`，WeakMap keyed by 运行时 agent 对象，agent 回收自动清理）：
+  - agent 的**首次**命中 → 规则文本由**系统提示词段落**投递（`_extraPrompt` 返回文本并记录 `{route, text}`）；
+  - 之后**无任何变化**（同路由同文本）→ 段落返回 `""`，渲染器丢弃空段落——系统提示词**不重复注入**；
+  - **变化**（切模型或改规则）→ 段落保持 `""`，由 `agent/pre-step` 监听器在**与宿主 `[model changed]` 通知同一注入点**追加一条 user 通知消息（`createUserMessage`，`source.plugin: "model-prompt-injector"`，root 监听器最外层执行，排在宿主通知之后）；切到无规则路由时发显式 `[model prompt rules cleared: …]` 清除通知，避免旧规则滞留；
+  - 若某 agent 的管线**从不触发 pre-step**（意外情况），段落侧连见 3 次未投递的变化 → 回退为系统提示词投递，绝不丢更新。
+- **为什么 root 监听器能收到所有 agent 的 pre-step**：宿主 `dsh-scope` 的 `scopeTarget` 载具过滤器对**无 scope 标签的监听器一律放行**（"a listener owned by an enclosing scope receives every descendant scope's events…events flow up the chain, never down"）；`installModelSelection` 同款 `(payload, next)` 瀑布签名，payload `{agent, messages, signal, step}`，决策形状 `{kind, messages}`（`kind === "reject"`、空 `messages`、`signal.aborted` 时不动决策）。
 - **运行时路由来源（0.1.5+ 已变更）**：宿主新增模型选择层（`installModelSelection`，见 dsh-agent）用 `agent/request` waterfall 把请求路由覆盖为「UI 选择 → 已记录请求头 → 默认模型」；**`agent.options.provider/model` 只是创建时快照，UI 里切换模型或默认模型变更后与真实路由分叉**。插件 `_resolveRoute` 按同一优先级解析：① `sessionProjections.stateOf(session,"modelSelection").pending`（UI 选择，持久化镜像）② `session.requestHeader().config`（已记录实际路由）③ `agent.options`（无选择层的 subagent/SDK/workflow 子代理的真是路由）。**不要直接读 `agentDefaultModel.currentSelection()` 做默认回退**——会误伤无选择层的代理（把默认模型的规则注入到别的路由）。
-- **段落 order = 9950**：内置 `SECTION_ORDERS` 最大是 `STRUCTURED_OUTPUT = 9900`（见宿主 `dsh-system-prompt/lib/index.js`），9950 使规则文本落在系统提示词**最末尾**。
-- 未命中返回 `""`：`renderPrompt` 会丢弃空文本段落，未命中路由零开销。`_extraPrompt` **绝不能抛异常**（会毒化整次组装），全程 try/catch 兜底返回空串。
+- 未命中返回 `""`：`renderPrompt` 会丢弃空文本段落，未命中路由零开销。`_extraPrompt` 与 pre-step 监听器**绝不抛异常**（分别会毒化整次组装 / step 准入），全程 try/catch 兜底。
 - **不要试图在 `llm/stream` waterfall 里改请求**：agent loop 发出的请求带 `markAgentLoopRequest` 标记且 **deep-frozen**，任何修改都会抛错——这是刻意设计（请求内容必须是会话日志的纯函数）。
 - 动态插件原型（会话内 cordis_define 版 prompt-1）已端到端验证过该链路；本仓库是它的正式固化版，差异仅在：类插件形态、Typert Remote、config.json 持久化。
+- **compaction 注意**：切换通知是对话消息，长会话被压缩后可能随通知一起裁掉（系统提示词的首次投递同理）。此时在设置页**重存一次规则**（文本变化触发重投）或**切换一次模型**即可恢复。
 
 ### 2. 规则模型与匹配
 
 - 规则形状 `{ key, provider, model, prompt, updatedAt }`，`key = provider + "/" + model`；`model === "*"` 表示服务商级规则。
-- 表按 key 升序排列：`*`（0x2A）先于任何字母数字，所以 `provider/*` 天然排在 `provider/xxx` 之前，注入顺序 = 服务商级 → 模型级，`_extraPrompt` 按表序拼接（`\n\n` 连接）。
+- 表按 key 升序排列：`*`（0x2A）先于任何字母数字，所以 `provider/*` 天然排在 `provider/xxx` 之前，注入顺序 = 服务商级 → 模型级，`_rulesText` 按表序拼接（`\n\n` 连接）。
 - 匹配**大小写敏感**：模型 id 就是路由 id（如 `MiniMax-M3`），以「模型」设置页配置为准。
 - `setRule` 空白 prompt = 删除该条；任何规则变更即 `_persist()`（fire-and-forget，失败静默——持久化失败绝不影响注入与 UI）。
 
@@ -78,7 +87,8 @@ dsh plugin --profile web add <包名或本地路径>   # 本地路径走 link:�
 link: 调试时对齐宿主依赖版本（避免双副本漂移）：
 
 ```bash
-npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@4.0.2 @deepseek-ai/dsh-typert-protocol@0.1.2-rc.1 zod@4.5.4
+# 0.1.5-rc.x 宿主：cordis@4.0.2 + typert-protocol@0.1.5-rc.2 + dsh-llm@0.1.5-rc.2；0.1.7-rc.1 宿主：cordis@4.0.4 + typert-protocol@0.1.7-rc.1 + dsh-llm@0.1.7-rc.1
+npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@4.0.2 @deepseek-ai/dsh-typert-protocol@0.1.5-rc.2 @deepseek-ai/dsh-llm@0.1.5-rc.2 zod@4.5.4
 ```
 
 宿主版本从桌面安装目录的 `.pnpm` 仓查（`dsh\node_modules\.pnpm`）。
@@ -109,4 +119,4 @@ npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@
 
 - 监听器/文本函数**绝不抛异常**（注入路径已全程 try/catch）。
 - 规则是全局的：对所有会话与子代理生效（这是有意语义——提示词跟随模型路由，不跟随会话）。
-- 不碰会话日志（不写任何自定义事件），唯一持久化是 config.json。
+- 不写任何自定义**事件**；唯一的对话痕迹是切换/清除通知消息（`source.plugin: "model-prompt-injector"`，与宿主 model-selection 通知同机制），唯一持久化是 config.json。

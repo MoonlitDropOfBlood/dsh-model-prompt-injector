@@ -44,7 +44,10 @@ dsh plugin --profile web remove @duke-dsh-plugins/dsh-model-prompt-injector
 ## 实现要点
 
 - 注入基于 `systemPrompt` 服务的**动态段落**：段落文本是每次模型 step 组装时求值的函数，运行时组装上下文携带 `agent`，按宿主模型选择层的同一优先级解析本次请求的目标路由（UI 选择的模型 → 已记录请求头 → 创建时 options，DSH 0.1.5+ 下 `agent.options` 只是创建时快照）做规则匹配；未命中返回空串，渲染器自动丢弃空段落（零开销）。
+- **不重复注入**：每个 agent 的**首次**命中由系统提示词投递（规则在系统提示词末尾）；之后内容不变时段落恒为空。模型**切换**或**规则编辑**时，规则改经 `agent/pre-step` 注入点以一条用户通知消息投递——与宿主 `[model changed]` 通知同一时机、紧随其后；切到无规则的路由会收到显式的 `[model prompt rules cleared: …]` 清除通知。
 - 规则读写走插件自有的 Typert Remote 服务（`modelPromptInjector.getState / setRule`），Client 经 `ctx.remote.$mount` 自挂载命名空间后调用。
+
+> 注意：切换通知是对话消息，长会话被压缩后可能随通知一起被裁掉。若发现规则“丢失”，在设置页重存一次规则或切换一次模型即可重新注入。
 
 ## 开发
 

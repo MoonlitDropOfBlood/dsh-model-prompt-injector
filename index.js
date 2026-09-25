@@ -46,6 +46,7 @@
 
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { Service } from "@deepseek-ai/cordis";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -71,6 +72,76 @@ const CONFIG_FILE = join(DATA_DIR, "config.json");
 /** Rule key = `provider/model`; `*` as model marks the provider-wide rule. */
 function ruleKey(provider, model) {
   return provider + "/" + model;
+}
+
+/** Route equality; undefined never equals anything (defensive). */
+function sameRoute(left, right) {
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.provider === right.provider &&
+    left.model === right.model
+  );
+}
+
+/**
+ * Short route label, mirroring the host's model-selection notice: the
+ * provider is omitted when both routes share it.
+ */
+function routeLabel(route, other) {
+  if (route === undefined) return "(unknown)";
+  return other !== undefined && route.provider === other.provider
+    ? route.model
+    : route.provider + "/" + route.model;
+}
+
+/** Bound one notice summary line (host limit is 120 chars). */
+function clipSummary(text) {
+  return text.length <= 120 ? text : text.slice(0, 119) + "…";
+}
+
+/**
+ * Build the switch-time notice message. It rides the same `agent/pre-step`
+ * injection point as the host's `[model changed]` notice, so a model switch
+ * announces both the route change and the rules that now apply, in adjacent
+ * user messages. A switch to an unruled route emits an explicit clear notice
+ * so stale rules never linger silently.
+ */
+function buildRulesNotice(previousRoute, route, text) {
+  const to = routeLabel(route, previousRoute);
+  if (text.length === 0) {
+    return createUserMessage({
+      content: [
+        {
+          type: "text",
+          text: `[model prompt rules cleared: no prompt rules apply to ${to}]`,
+        },
+      ],
+      source: {
+        kind: "plugin",
+        plugin: "model-prompt-injector",
+        form: "notice",
+        summary: clipSummary(`模型提示词规则已清除（${to}）`),
+      },
+    });
+  }
+  const header = sameRoute(previousRoute, route)
+    ? `[model prompt rules updated for ${to}]`
+    : `[model prompt rules: ${routeLabel(previousRoute, route)} → ${to}; ` +
+      `the rules below apply to the current model]`;
+  return createUserMessage({
+    content: [{ type: "text", text: header + "\n\n" + text }],
+    source: {
+      kind: "plugin",
+      plugin: "model-prompt-injector",
+      form: "notice",
+      summary: clipSummary(
+        sameRoute(previousRoute, route)
+          ? `模型提示词规则已更新（${to}）`
+          : `模型提示词规则 ${routeLabel(previousRoute, route)} → ${to}`
+      ),
+    },
+  });
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -155,6 +226,19 @@ export class ModelPromptInjectorService extends TypertRemoteService {
      */
     this._rules = [];
 
+    /**
+     * Per-agent delivery bookkeeping (WeakMap keyed by the runtime agent
+     * object, so discarded agents collect automatically): what route's rules
+     * have been injected into context and how. The FIRST injection for an
+     * agent goes into the system prompt (the section below); every later
+     * change (model switch or rule edit) is delivered as a one-time user
+     * notice at the `agent/pre-step` injection point — the same moment the
+     * host's model-selection layer appends its `[model changed]` notice —
+     * instead of re-injecting the system prompt on every step.
+     *   { route: { provider, model }, text: string, misses?: number }
+     */
+    this._delivered = new WeakMap();
+
     await this._loadPersisted();
 
     // The injection itself: one dynamic section in the ROOT scope, so every
@@ -167,36 +251,113 @@ export class ModelPromptInjectorService extends TypertRemoteService {
         order: SECTION_ORDER,
         text: (context) => this._extraPrompt(context),
       });
+
+      /**
+       * Switch-time delivery. A root-scope listener admits every descendant
+       * agent scope's dispatch (scopeTarget admits untagged listeners
+       * globally; events flow up, never down). The listener runs outermost,
+       * so the decision already carries the host's `[model changed]` notice
+       * and ours lands right after it. Never throws — a listener failure
+       * must not poison step admission.
+       */
+      const disposePreStep = scope.on("agent/pre-step", async ({ agent, signal }, next) => {
+        const decision = await next();
+        try {
+          if (decision.kind === "reject") return decision;
+          if (signal && signal.aborted) return decision;
+          if (agent === undefined || agent === null) return decision;
+          if (!Array.isArray(decision.messages) || decision.messages.length === 0) return decision;
+          const state = this._delivered.get(agent);
+          // No delivery yet: the first one is reserved for the system prompt.
+          if (state === undefined) return decision;
+          const route = this._resolveRoute(agent);
+          if (route === undefined) return decision;
+          const text = this._rulesText(route);
+          if (sameRoute(state.route, route) && state.text === text) return decision;
+          const notice = buildRulesNotice(state.route, route, text);
+          state.route = route;
+          state.text = text;
+          state.misses = 0;
+          return { ...decision, messages: [...decision.messages, notice] };
+        } catch (e) {
+          /* never poison step admission */
+          return decision;
+        }
+      });
+      return () => disposePreStep();
     });
   }
 
   // ---- injection --------------------------------------------------------------
 
   /**
-   * Section text, evaluated before every model step. The runtime assembly
-   * context carries the agent (`assembleContextFor` returns
-   * `{ agent, scope, signal }`); the route the upcoming request actually
-   * targets is resolved by {@link _resolveRoute} — the same chain the host's
-   * model-selection layer uses, because since DSH 0.1.5 `agent.options` is
-   * only the creation-time snapshot and diverges from the real route whenever
-   * the user picks a model in the UI or the default changes later. Returns ""
-   * for unmatched routes: the prompt renderer drops empty sections, so
-   * unmatched models pay nothing. Never throws — a section evaluation failure
-   * would otherwise poison the whole assembly.
+   * Section text, evaluated before every model step. Delivery model:
+   *
+   *   - FIRST delivery for an agent (its first assembled route that matches
+   *     any rule) returns the rules here, in the system prompt.
+   *   - While nothing changed (same route, same matched text) returns "" —
+   *     the renderer drops empty sections, so the system prompt is not
+   *     re-injected on every step.
+   *   - On a change (model switch or rule edit) returns "" here; the update
+   *     is delivered as a one-time user notice at the `agent/pre-step`
+   *     injection point (see [Service.init]) — the same moment the host
+   *     announces the model switch.
+   *
+   * If the pipeline never runs `agent/pre-step` for an agent (unexpected),
+   * the same mismatch is observed here three assemblies in a row and the
+   * update falls back to system-prompt delivery rather than being dropped.
+   * Never throws — a section evaluation failure would poison the assembly.
    */
   _extraPrompt(context) {
     try {
-      const route = this._resolveRoute(context ? context.agent : undefined);
-      if (!route) return "";
-      const parts = [];
-      for (const rule of this._rules) {
-        if (rule.provider !== route.provider) continue;
-        if (rule.model === "*" || rule.model === route.model) parts.push(rule.prompt);
+      const agent = context ? context.agent : undefined;
+      const route = this._resolveRoute(agent);
+      const text = this._rulesText(route);
+      if (route === undefined) {
+        // Route temporarily unknowable: make no delivery decision and leave
+        // any existing state untouched (avoids false mismatches).
+        return "";
       }
-      return parts.join("\n\n");
+      if (agent === undefined || agent === null) {
+        // No agent identity — no per-agent bookkeeping possible; degrade to
+        // a plain always-fresh section.
+        return text;
+      }
+      const state = this._delivered.get(agent);
+      if (state === undefined) {
+        if (text.length > 0) this._delivered.set(agent, { route, text, misses: 0 });
+        return text;
+      }
+      if (sameRoute(state.route, route) && state.text === text) {
+        state.misses = 0;
+        return "";
+      }
+      state.misses = (state.misses || 0) + 1;
+      if (state.misses >= 3) {
+        state.route = route;
+        state.text = text;
+        state.misses = 0;
+        return text;
+      }
+      return "";
     } catch (e) {
       return "";
     }
+  }
+
+  /**
+   * The matched rule text for one resolved route: every provider-wide
+   * `provider/*` rule plus the exact `provider/model` rule, table order,
+   * joined by blank lines. Empty string for unmatched routes.
+   */
+  _rulesText(route) {
+    if (route === undefined) return "";
+    const parts = [];
+    for (const rule of this._rules) {
+      if (rule.provider !== route.provider) continue;
+      if (rule.model === "*" || rule.model === route.model) parts.push(rule.prompt);
+    }
+    return parts.join("\n\n");
   }
 
   /**
