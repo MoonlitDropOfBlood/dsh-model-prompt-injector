@@ -509,12 +509,28 @@ export class ModelPromptInjectorService extends TypertRemoteService {
    * `[...settingsPath, "models"]`. Active routes (a mounted adapter) are
    * flagged via `llm.listProviders()`. Only detached leaf values cross the
    * wire; a missing `llm`/`settings` registry degrades to an empty list.
+   *
+   * Provider values come from one `settings.describe()` snapshot (one
+   * descriptor per namespace carrying the effective `value`, the same field the
+   * Models settings page reads). `settings.get(ns)` is gone as of DSH 0.1.7;
+   * calling it threw into the per-entry catch and emptied the directory.
    */
   _directory() {
     const out = [];
     const llm = this.ctx.get("llm");
     if (llm === undefined) return out;
     const settings = this.ctx.get("settings");
+    /** Settings namespaces by profile entry id, from one describe() snapshot. */
+    const namespaces = new Map();
+    if (settings !== undefined) {
+      try {
+        for (const descriptor of settings.describe()) {
+          if (descriptor && typeof descriptor.ns === "string") namespaces.set(descriptor.ns, descriptor);
+        }
+      } catch (e) {
+        /* an unreadable settings registry degrades to an empty directory */
+      }
+    }
     const active = new Set();
     try {
       for (const info of llm.listProviders()) {
@@ -532,14 +548,8 @@ export class ModelPromptInjectorService extends TypertRemoteService {
     for (const entry of entries) {
       try {
         const settingsPath = Array.isArray(entry.settingsPath) ? entry.settingsPath : [];
-        let value;
-        if (settings !== undefined) {
-          try {
-            value = settings.get(entry.settingsNs);
-          } catch (e) {
-            value = undefined;
-          }
-        }
+        const namespace = typeof entry.settingsNs === "string" ? namespaces.get(entry.settingsNs) : undefined;
+        const value = namespace === undefined ? undefined : namespace.value;
         const configured =
           value !== undefined && (settingsPath.length === 0 || getPath(value, settingsPath) !== undefined);
         if (!configured) continue;

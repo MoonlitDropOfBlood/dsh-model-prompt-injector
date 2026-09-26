@@ -91,6 +91,10 @@ const _modelPromptInjector_setRule_parameter_0$schema = z.object({
   prompt: z.string(),
 });
 
+// Since DSH 0.1.7-rc.1 every strict codec must carry the lazy `create()` factory
+// that materializes its schema (typert-loader `requireStrictCodec`); without it
+// the whole manifest is refused at boot ("result codec has no create()
+// factory"). `schema` stays for older hosts; each factory returns the same one.
 export const TYPERT = {
   package: "@duke-dsh-plugins/dsh-model-prompt-injector",
   face: "host",
@@ -107,6 +111,7 @@ export const TYPERT = {
         mode: "strict",
         typeSymbol: "dsh-model-prompt-injector#ModelPromptInjectorStateResult",
         schema: stateResultSchema,
+        create: () => stateResultSchema,
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
@@ -125,6 +130,7 @@ export const TYPERT = {
             mode: "strict",
             typeSymbol: "dsh-model-prompt-injector#ModelPromptInjectorSetRuleRequest",
             schema: _modelPromptInjector_setRule_parameter_0$schema,
+            create: () => _modelPromptInjector_setRule_parameter_0$schema,
           },
         },
       ],
@@ -132,6 +138,7 @@ export const TYPERT = {
         mode: "strict",
         typeSymbol: "dsh-model-prompt-injector#ModelPromptInjectorSetRuleResult",
         schema: setRuleResultSchema,
+        create: () => setRuleResultSchema,
       },
       sourceLocation: { file: "index.js", line: 1, column: 1 },
     },
