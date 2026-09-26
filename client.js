@@ -101,9 +101,13 @@ window.__ModuleLoader__.load({
     // client assembly mounts only the official namespaces, so a plugin must
     // mount its own. Mirrors the invocations in typert.host.js. zod is not
     // requirable in the browser module loader, so codecs use passthrough
-    // schemas — the runtime contract only requires typeSymbol + schema.parse().
+    // schemas — the runtime contract only requires typeSymbol + parse().
+    // Since DSH 0.1.7-rc.1 a strict codec must also carry the lazy `create()`
+    // factory that materializes its schema (typert registry `validateCodec`);
+    // without it `$mount` below throws "strict codec has no create() factory".
+    // `schema` stays for older hosts.
     const passthrough = () => ({ parse: (v) => v });
-    const result = (typeSymbol) => ({ mode: "strict", typeSymbol, schema: passthrough() });
+    const result = (typeSymbol) => ({ mode: "strict", typeSymbol, schema: passthrough(), create: passthrough });
     const CLIENT_REMOTE = {
       package: "dsh-model-prompt-injector",
       descriptors: [
@@ -131,6 +135,7 @@ window.__ModuleLoader__.load({
                 mode: "strict",
                 typeSymbol: "dsh-model-prompt-injector#ModelPromptInjectorSetRuleRequest",
                 schema: passthrough(),
+                create: passthrough,
               },
             },
           ],

@@ -50,7 +50,7 @@ dsh-model-prompt-injector/
 
 ### 3. 本地已配置模型枚举（与「模型」设置页同一逻辑）
 
-- `llm.listConfigurableProviders()` 拿目录项 `{provider, displayName, settingsNs, settingsPath}`；`settings.get(ns)` 取解析值（命名空间未注册 = undefined = 未配置）。
+- `llm.listConfigurableProviders()` 拿目录项 `{provider, displayName, settingsNs, settingsPath}`；`settings.describe()` 取一次快照、按 `descriptor.ns` 建表，读 `descriptor.value` 作为解析值（命名空间不在快照里 = undefined = 未配置）。**不要用 `settings.get(ns)`**：DSH 0.1.7 已移除，调用会抛进逐项 catch，目录静默变空。
 - 「已配置」判定：`settingsPath.length === 0 || getPath(value, settingsPath) !== undefined`。
 - 模型列表在 `[...settingsPath, "models"]`，数组项 `{id, name?, ...}`。
 - `llm.listProviders()` 的 id 集合用于「运行中/未激活」徽标。
@@ -64,7 +64,7 @@ wire 变更必须三处一起改：
 2. `typert.host.js`：zod schema（**strict**，字段必须整形状）+ invocation + `model.services[].types` 声明；
 3. `client.js`：`CLIENT_REMOTE` 描述符（id/service/namespace/method 与 typert 一一对应）+ UI 调用。
 
-Client 侧 zod 不可用，codec 用 passthrough schema（`{ parse: (v) => v }`）；返回值经 `pick()` 做双层信封解包。
+Client 侧 zod 不可用，codec 用 passthrough schema（`{ parse: (v) => v }`）；**strict codec 两面都必须带 `create()` 惰性工厂**（DSH 0.1.7-rc.1 起强制，缺了 host manifest 整份被拒、client `$mount` 抛错），`schema` 保留给旧宿主；返回值经 `pick()` 做双层信封解包。
 
 ### 5. Client 约定
 
