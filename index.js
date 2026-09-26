@@ -69,6 +69,16 @@ const SECTION_ORDER = 9950;
 const DATA_DIR = join(process.env.DSH_HOME || join(homedir(), ".dsh"), "model-prompt-injector");
 const CONFIG_FILE = join(DATA_DIR, "config.json");
 
+/**
+ * Producer-owned message source kind for the switch/clear notices. Session
+ * format v4 (DSH 0.1.7) retired the catch-all `{ kind: "plugin", plugin }`
+ * wrapper: the session writer rejects it with "format v4 message requires a
+ * producer-owned source kind", failing the whole turn. `plugin:<name>` is the
+ * exact kind the host's v3→v4 migration assigns to released notices of a
+ * producer it does not know by name, so new notices match migrated history.
+ */
+const NOTICE_SOURCE_KIND = "plugin:model-prompt-injector";
+
 /** Rule key = `provider/model`; `*` as model marks the provider-wide rule. */
 function ruleKey(provider, model) {
   return provider + "/" + model;
@@ -118,8 +128,7 @@ function buildRulesNotice(previousRoute, route, text) {
         },
       ],
       source: {
-        kind: "plugin",
-        plugin: "model-prompt-injector",
+        kind: NOTICE_SOURCE_KIND,
         form: "notice",
         summary: clipSummary(`模型提示词规则已清除（${to}）`),
       },
@@ -132,8 +141,7 @@ function buildRulesNotice(previousRoute, route, text) {
   return createUserMessage({
     content: [{ type: "text", text: header + "\n\n" + text }],
     source: {
-      kind: "plugin",
-      plugin: "model-prompt-injector",
+      kind: NOTICE_SOURCE_KIND,
       form: "notice",
       summary: clipSummary(
         sameRoute(previousRoute, route)

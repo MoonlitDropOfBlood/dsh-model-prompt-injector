@@ -32,7 +32,7 @@ dsh-model-prompt-injector/
 - **投递状态机**（`this._delivered`，WeakMap keyed by 运行时 agent 对象，agent 回收自动清理）：
   - agent 的**首次**命中 → 规则文本由**系统提示词段落**投递（`_extraPrompt` 返回文本并记录 `{route, text}`）；
   - 之后**无任何变化**（同路由同文本）→ 段落返回 `""`，渲染器丢弃空段落——系统提示词**不重复注入**；
-  - **变化**（切模型或改规则）→ 段落保持 `""`，由 `agent/pre-step` 监听器在**与宿主 `[model changed]` 通知同一注入点**追加一条 user 通知消息（`createUserMessage`，`source.plugin: "model-prompt-injector"`，root 监听器最外层执行，排在宿主通知之后）；切到无规则路由时发显式 `[model prompt rules cleared: …]` 清除通知，避免旧规则滞留；
+  - **变化**（切模型或改规则）→ 段落保持 `""`，由 `agent/pre-step` 监听器在**与宿主 `[model changed]` 通知同一注入点**追加一条 user 通知消息（`createUserMessage`，`source.kind: "plugin:model-prompt-injector"`，root 监听器最外层执行，排在宿主通知之后）；切到无规则路由时发显式 `[model prompt rules cleared: …]` 清除通知，避免旧规则滞留；
   - 若某 agent 的管线**从不触发 pre-step**（意外情况），段落侧连见 3 次未投递的变化 → 回退为系统提示词投递，绝不丢更新。
 - **为什么 root 监听器能收到所有 agent 的 pre-step**：宿主 `dsh-scope` 的 `scopeTarget` 载具过滤器对**无 scope 标签的监听器一律放行**（"a listener owned by an enclosing scope receives every descendant scope's events…events flow up the chain, never down"）；`installModelSelection` 同款 `(payload, next)` 瀑布签名，payload `{agent, messages, signal, step}`，决策形状 `{kind, messages}`（`kind === "reject"`、空 `messages`、`signal.aborted` 时不动决策）。
 - **运行时路由来源（0.1.5+ 已变更）**：宿主新增模型选择层（`installModelSelection`，见 dsh-agent）用 `agent/request` waterfall 把请求路由覆盖为「UI 选择 → 已记录请求头 → 默认模型」；**`agent.options.provider/model` 只是创建时快照，UI 里切换模型或默认模型变更后与真实路由分叉**。插件 `_resolveRoute` 按同一优先级解析：① `sessionProjections.stateOf(session,"modelSelection").pending`（UI 选择，持久化镜像）② `session.requestHeader().config`（已记录实际路由）③ `agent.options`（无选择层的 subagent/SDK/workflow 子代理的真是路由）。**不要直接读 `agentDefaultModel.currentSelection()` 做默认回退**——会误伤无选择层的代理（把默认模型的规则注入到别的路由）。
@@ -119,4 +119,4 @@ npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@
 
 - 监听器/文本函数**绝不抛异常**（注入路径已全程 try/catch）。
 - 规则是全局的：对所有会话与子代理生效（这是有意语义——提示词跟随模型路由，不跟随会话）。
-- 不写任何自定义**事件**；唯一的对话痕迹是切换/清除通知消息（`source.plugin: "model-prompt-injector"`，与宿主 model-selection 通知同机制），唯一持久化是 config.json。
+- 不写任何自定义**事件**；唯一的对话痕迹是切换/清除通知消息（`source.kind: "plugin:model-prompt-injector"`，与宿主 model-selection 通知同机制。**不要写回 `{ kind: "plugin", plugin }`**：DSH 0.1.7 的会话格式 v4 已废弃这个包装，写入即抛 `format v4 message requires a producer-owned source kind`，整轮失败；`plugin:<name>` 与宿主 v3→v4 迁移给旧通知分配的 kind 一致），唯一持久化是 config.json。
