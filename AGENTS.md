@@ -117,6 +117,17 @@ npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@
 - **事故链复盘**：9/25 18:27 桌面升级重启，新核心 spawn 后 **199ms 即 exit 1**（远早于插件加载完成的正常 3s+，恢复器 `parseBootFailure` 未归因任何插件 → 无 plugin-recovery 日志行），49s 后重试即成功——**且当时 profile package.json 里插件仍在**，即 0.1.7-rc.2 下插件实际正常加载运行了 16 分钟。02:44（本地）package.json/pnpm-lock 变更移除本插件与 dsh-token-stats，无任何自动化机制留痕（桌面日志/市场日志均无），判定为 UI 手动卸载。诱因：升级瞬间的一次性启动失败 + dshmarket 24h 发现缓存仍显示旧 manifest facts（v1.0.2），造成「不兼容」观感。**教训：判定兼容性用宿主 `evaluatePluginCompatibility` 实测，不要凭启动失败面板或市场徽标下结论。**
 - **dshmarket 发现缓存**：`<profile>/.dsh-market/discovery-compatibility-v1.json` 缓存 npm manifest facts 24h（conclusions 不缓存）。发布新版本后若市场徽标不更新，可删该文件强制刷新（schema 带版本号，安全）。
 
+## 10. DSH 0.2.0-rc.1 兼容性（2026-09-29 验证，e2e 19/19）
+
+- **「无法加载」的真正根因是 npm 已发布的 1.1.1**：其 `engines.dsh` 为 `>=0.1.5-rc.2 <0.2.0`、peers 无 `^0.2.0-rc.1`，宿主闸门 `evaluatePluginCompatibility`（逻辑与 §9 相同，只查 `@deepseek-ai/dsh`/`dsh-*` peers，includePrerelease）直接拒绝。本地工作区 manifest 早已修复但未发布——**peers/engines 的修复必须随版本发布才生效**（1.2.0 发布后市场安装才可用）。
+- **0.2.0-rc.1 架构变化：profile 不再携带宿主包**。`~/.dsh/profiles/web/node_modules/@deepseek-ai/` 只剩 `cosmokit`/`schemastery`；`pnpm-workspace.yaml` 为 `nodeLinker: hoisted` + `autoInstallPeers: false`。§9 的「junction farm」机制已死。宿主从桌面安装目录运行（`%APPDATA%\DeepSeek Harness Desktop\dsh\node_modules\@deepseek-ai\*` 全套 0.2.0-rc.1），**插件 bare import 由宿主在运行时拦截解析**（dsh-app-boot `createRuntimeResolution` + `PluginPackages` 服务的 `installRuntimeInterception`；worker 侧走 `registerWorkerResolution`）——插件代码零修改，但**测试锚点必须换**。
+- **e2e 锚点双轨化**：`test/host-loader.mjs` 按「能否 resolve `@deepseek-ai/dsh-typert-protocol`」依次探测 env `DSH_HOST_MODULES` → 各 profile 的 package.json（≤0.1.x 命中）→ 桌面安装 checkout 的 `@deepseek-ai/dsh/package.json`（0.2.0+ 命中），整场测试用同一锚点，杜绝混版本。
+- **cordis 4.0.4（0.2.0-rc.1）没有 root `start()`/`stop()`**：`ctx.plugin()` 即刻启动并返回 thenable fiber，`await app.plugin(X)` 即等待加载完成并抛启动错误。测试/工具里不要再找 `app.start()`。
+- **SECTION_ORDERS 最大值仍是 `DEPLOYMENT_PERSONA_SUFFIX = 10200`**（rc.1 另有 `CONTEXT_ORDERS`，与 section 无关），10250 依旧落在系统提示词最末尾，无需再调。
+- **客户端 Remote 真身**：`$mount` 实现在 `@deepseek-ai/dsh-api-gateway` client（`mountContribution` → `ctx.typert.remotes.register(contribution)`）；registry 是 `@deepseek-ai/dsh-typert-registry` 的 client bundle（同为 `window.__ModuleLoader__.load` 包装，e2e 可直接加载宿主副本驱动）。0.2.0-rc.1 strict codec 校验 = `typeSymbol` + `create()`（不再看 `schema.parse`）；descriptor 必填面不变（id/service/namespace/method/invocation/parameters/result）。e2e F2+ 用真实 registry 挂载本插件 contribution 全绿。
+- **顺带修复的真 bug（e2e 在慢 FS 上实测复现）**：`_persist()` 并发 fire-and-forget `writeFile` 会**撕裂 config.json**（两次写交错）。已改为单 promise 链串行写（`_persistChain`），最后一条规则的 payload 必然最后落盘。快速连续点保存/清除的 UI 操作即可触发。
+- **测试基建修正**：`check()` 现按注册顺序 await async 用例体（失败在当场抛出，而不是漂移成 unhandled rejection）；D5 轮询持久化**内容**而非文件存在性（setRule 先于落盘返回是设计行为）。`npm test` 已包含 `test/host-compat.e2e.mjs`。
+
 ## 发布
 
 - 打 `v*` 标签推送 GitHub：`.github/workflows/release.yml` 三个 job——build（node --check + npm pack + artifact）→ publish-npm（**OIDC Trusted Publishing**，Node 24 + npm ≥ 11.5.1，无静态 token）→ GitHub Release（带 tgz）。

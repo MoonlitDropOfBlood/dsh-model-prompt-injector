@@ -218,6 +218,9 @@ export class ModelPromptInjectorService extends TypertRemoteService {
      */
     this._rules = [];
 
+    /** Serialize _persist() writes — see the method comment. */
+    this._persistChain = Promise.resolve();
+
     /**
      * Per-agent delivery bookkeeping (WeakMap keyed by the runtime agent
      * object, so discarded agents collect automatically): what route's rules
@@ -433,10 +436,17 @@ export class ModelPromptInjectorService extends TypertRemoteService {
    * Persist the rule table (fire-and-forget, best-effort): a persistence
    * failure must never break the settings UI or the injection path — the
    * in-memory table stays authoritative for this process either way.
+   *
+   * Writes are SERIALIZED through one promise chain: rapid rule edits each
+   * fire a persist, and unserialized writeFile calls can interleave on a slow
+   * filesystem (observed tearing config.json under concurrent writes), while
+   * a queued chain makes the last edit's payload the one that lands last and
+   * wins.
    */
   _persist() {
     const payload = JSON.stringify({ version: 1, rules: this._rules }, null, 2);
-    mkdir(DATA_DIR, { recursive: true })
+    this._persistChain = this._persistChain
+      .then(() => mkdir(DATA_DIR, { recursive: true }))
       .then(() => writeFile(CONFIG_FILE, payload, "utf8"))
       .catch(() => {});
   }

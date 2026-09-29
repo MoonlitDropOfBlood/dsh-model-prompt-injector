@@ -64,7 +64,7 @@ dsh plugin --profile web add /path/to/dsh-model-prompt-injector
 # 重启 DSH 生效
 ```
 
-**宿主要求**：`engines.dsh` 声明 `>=0.1.5-rc.2 <0.2.0`（dshmarket 按此显示"宿主要求"并做安装适配判定）。
+**宿主要求**：`engines.dsh` 声明 `>=0.1.5-rc.2 <0.3.0-rc.1`（dshmarket 按此显示"宿主要求"并做安装适配判定）。已覆盖 DSH 0.1.5-rc.2 ～ 0.2.0-rc.1（0.2.0 起 profile 不再携带宿主包，插件导入由宿主运行时解析，本插件无需任何配置变更）。
 
 ## 发布
 
