@@ -28,7 +28,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { register } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Isolate persistence BEFORE index.js computes CONFIG_FILE at import time.
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), "model-prompt-injector-host-e2e-"));
@@ -305,8 +306,19 @@ globalThis.MutationObserver = class {
 // The host's OWN client-side typert registry bundle (same wrapper format the
 // web shell loads): its apply() installs the real `typert` service, whose
 // `remotes.register(contribution)` is exactly what dsh-api-gateway's
-// `ctx.remote.$mount` calls under the hood.
-await import("@deepseek-ai/dsh-typert-registry/client");
+// `ctx.remote.$mount` calls under the hood. DSH 0.2.1-rc.2 split the client
+// export: node resolves ./client to a plain-ESM build that never touches
+// __ModuleLoader__, while the browser wrapper this e2e simulates lives in
+// lib/client.browser.js (and now requires zod) — load it explicitly, falling
+// back to the single-file wrapper older hosts shipped.
+const zod = await import("zod");
+const registryRoot = dirname(hostRequire.resolve("@deepseek-ai/dsh-typert-registry/package.json"));
+const registryBrowserBundle = join(registryRoot, "lib", "client.browser.js");
+if (existsSync(registryBrowserBundle)) {
+  await import(pathToFileURL(registryBrowserBundle).href);
+} else {
+  await import("@deepseek-ai/dsh-typert-registry/client");
+}
 await import("../client.js");
 const registration = globalThis.__clientRegistration;
 assert.ok(registration, "client.js did not call window.__ModuleLoader__.load");
@@ -380,6 +392,7 @@ check("F2+ the REAL 0.2.0 typert-registry accepts the client contribution", () =
   assert.ok(registryRegistration, "the host's typert-registry client bundle never registered");
   const registryModule = registryRegistration.factory((specifier) => {
     if (specifier === "@deepseek-ai/cordis") return hostRequire("@deepseek-ai/cordis");
+    if (specifier === "zod") return zod;
     throw new Error(`unexpected typert-registry require: ${specifier}`);
   });
   const registryApp = new Context();
