@@ -1,14 +1,18 @@
 {
   "name": "@duke-dsh-plugins/dsh-model-prompt-injector",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "为 DeepSeek Harness 中本地已配置的模型追加系统提示词：按 provider/model 精确匹配或服务商级通配（provider/*）注入到系统提示词末尾，设置面板逐模型管理，规则持久化、重启不丢。",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MoonlitDropOfBlood/dsh-model-prompt-injector.git"
   },
   "homepage": "https://github.com/MoonlitDropOfBlood/dsh-model-prompt-injector",
-  "bugs": { "url": "https://github.com/MoonlitDropOfBlood/dsh-model-prompt-injector/issues" },
-  "publishConfig": { "access": "public" },
+  "bugs": {
+    "url": "https://github.com/MoonlitDropOfBlood/dsh-model-prompt-injector/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "dsh",
     "deepseek-harness",
@@ -26,6 +30,7 @@
     "./client": "./client.js",
     "./typert": "./typert.host.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
@@ -33,6 +38,7 @@
     "client.js",
     "typert.host.js",
     "cordis.patch.yml",
+    "icon.svg",
     "README.md",
     "LICENSE"
   ],
@@ -41,7 +47,9 @@
     "dsh": ">=0.1.5-rc.2 <0.3.0-rc.1"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web"
     }
