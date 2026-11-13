@@ -475,9 +475,18 @@ export class ModelPromptInjectorService extends TypertRemoteService {
   /**
    * Settings page snapshot: the rule table plus the directory of locally
    * configured providers/models (see _directory).
+   *
+   * `directoryError` is OPTIONAL and only present when the directory could not
+   * be read completely: the key is absent on the normal path, so the wire shape
+   * of a healthy snapshot is unchanged. When it IS present it explains WHY the
+   * directory is empty or partial — a silent empty list used to be
+   * indistinguishable from "the user configured no provider".
    */
   async getState() {
-    return { ok: true, value: { rules: this._rulesSnapshot(), providers: await this._directory() } };
+    const directory = await this._directory();
+    const value = { rules: this._rulesSnapshot(), providers: directory.providers };
+    if (directory.error !== null) value.directoryError = directory.error;
+    return { ok: true, value };
   }
 
   /**
@@ -518,25 +527,57 @@ export class ModelPromptInjectorService extends TypertRemoteService {
    * one's model catalog (the same join the official model catalog builds —
    * see dsh-api-session-controller buildModelCatalog). Rules only ever apply
    * to routes that actually serve requests, so the active set is the right
-   * universe; per-provider failures degrade that provider's model list to
-   * empty without sinking the directory. (The pre-0.1.7 enumeration through
-   * `settings.get(ns)` is gone: the 0.1.7 settings service no longer exposes
-   * namespace values, so that path returned nothing at all.)
+   * universe. (The pre-0.1.7 enumeration through `settings.get(ns)` is gone:
+   * the 0.1.7 settings service no longer exposes namespace values, so that
+   * path returned nothing at all.)
+   *
+   * NEVER fail silently: every degradation is reported as a human-readable
+   * reason, so the settings page can tell "no provider configured" (no
+   * reason) apart from "the directory could not be read" (a reason). The
+   * reasons are distinct on purpose:
+   *
+   *   - `llm` service not mounted at all  → "llm 服务不可用" (NOT "no
+   *     providers": the two used to be indistinguishable and the user was
+   *     told to configure a provider that was already there);
+   *   - `llm.listProviders()` throwing    → the exception message;
+   *   - one provider's `listModels()` failing → that provider keeps its
+   *     (empty) model list, every OTHER provider is still listed, and the
+   *     failing provider is named in the aggregated reason.
+   *
+   * Returns `{ providers, error }` where `error` is null on the healthy path.
    */
   async _directory() {
     const out = [];
+    const errors = [];
     const llm = this.ctx.get("llm");
-    if (llm === undefined) return out;
+    if (llm === undefined || llm === null) {
+      errors.push("llm 服务不可用：宿主未挂载 llm 服务，无法读取服务商与模型目录");
+      return this._directoryResult(out, errors);
+    }
+    if (typeof llm.listProviders !== "function") {
+      errors.push(
+        "llm 服务接口不兼容：宿主未提供 llm.listProviders()，无法读取服务商与模型目录"
+      );
+      return this._directoryResult(out, errors);
+    }
     let providers = [];
     try {
       providers = llm.listProviders();
     } catch (e) {
-      return out;
+      errors.push(`读取服务商列表失败：${errText(e)}`);
+      return this._directoryResult(out, errors);
+    }
+    if (!Array.isArray(providers)) {
+      errors.push("读取服务商列表失败：宿主返回的 llm.listProviders() 结果不是数组");
+      return this._directoryResult(out, errors);
     }
     for (const info of providers) {
       if (!info || typeof info.id !== "string" || info.id.length === 0) continue;
       const models = [];
       try {
+        if (typeof llm.listModels !== "function") {
+          throw new Error("宿主未提供 llm.listModels()");
+        }
         const rawModels = await llm.listModels(info.id);
         if (Array.isArray(rawModels)) {
           for (const item of rawModels) {
@@ -549,7 +590,10 @@ export class ModelPromptInjectorService extends TypertRemoteService {
           }
         }
       } catch (e) {
-        /* one unreadable catalog keeps its empty model list */
+        // One unreadable catalog degrades to an empty model list for THAT
+        // provider only — the other providers stay fully listed — and the
+        // reason (naming the provider) is surfaced to the settings page.
+        errors.push(`服务商 ${info.id} 的模型列表读取失败：${errText(e)}`);
       }
       out.push({
         provider: info.id,
@@ -558,7 +602,34 @@ export class ModelPromptInjectorService extends TypertRemoteService {
         models,
       });
     }
-    return out;
+    return this._directoryResult(out, errors);
+  }
+
+  /**
+   * Pack the directory outcome into `{ providers, error }`. The aggregated
+   * reason is logged once and returned only when there is something to say,
+   * so a healthy snapshot keeps the exact same wire shape as before.
+   */
+  _directoryResult(providers, errors) {
+    if (errors.length === 0) return { providers, error: null };
+    const error = errors.join("；");
+    this._warn(`[model-prompt-injector] 服务商/模型目录读取异常：${error}`);
+    return { providers, error };
+  }
+
+  /**
+   * Best-effort warning log. The logger is optional in the composition (and
+   * absent in the unit-test context), and a failing log must never take the
+   * settings page down with it.
+   */
+  _warn(message) {
+    try {
+      if (this.ctx && typeof this.ctx.logger === "function") {
+        this.ctx.logger("model-prompt-injector").warn(message);
+      }
+    } catch {
+      /* logging must never break the settings page */
+    }
   }
 }
 

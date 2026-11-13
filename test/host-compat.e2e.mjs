@@ -292,11 +292,24 @@ globalThis.window = {
     },
   },
 };
+// Fake settings nav rows: the shell paints one button per section, and the
+// plugin's legacy fallback finds its own row by label text.
+const makeNavButton = (text) => ({
+  textContent: text,
+  attributes: {},
+  setAttribute(name, value) {
+    this.attributes[name] = value;
+  },
+  removeAttribute(name) {
+    delete this.attributes[name];
+  },
+});
+const navButtons = [makeNavButton("账户"), makeNavButton("模型提示词"), makeNavButton("模型")];
 globalThis.document = {
   head: { appendChild: (node) => styleTags.push(node) },
   body: {},
   createElement: () => ({ textContent: "", remove() {} }),
-  querySelectorAll: () => [],
+  querySelectorAll: () => navButtons,
 };
 globalThis.MutationObserver = class {
   observe() {}
@@ -324,7 +337,7 @@ const registration = globalThis.__clientRegistration;
 assert.ok(registration, "client.js did not call window.__ModuleLoader__.load");
 assert.equal(registration.id, pkg.name, "client module id must be the package name");
 const clientExports = registration.factory((specifier) => {
-  if (specifier === "react") return { createElement: () => ({}) };
+  if (specifier === "react") return { createElement: (type, props, ...children) => ({ type, props: props || {}, children }) };
   if (specifier === "@deepseek-ai/dsh-client-ui-primitives") return { Button: () => {} };
   throw new Error(`unexpected client require: ${specifier}`);
 });
@@ -333,6 +346,9 @@ assert.deepEqual(clientExports.inject, ["slots", "remote"]);
 let mounted = null;
 const disposers = [];
 const slotRegistrations = [];
+const slotInjects = [];
+/** Inject callbacks per slot key, so a test can declare a slot later. */
+const slotInjectCallbacks = new Map();
 const remoteStub = {
   getState: async () => ({ ok: true, value: { rules: [], providers: [] } }),
   setRule: async () => ({ ok: true, value: { rules: [] } }),
@@ -350,7 +366,14 @@ await clientExports.apply({
     if (typeof dispose === "function") disposers.push(dispose);
   },
   slots: {
-    inject: (_name, register) => register(),
+    inject: (name, register) => {
+      slotInjects.push(name);
+      slotInjectCallbacks.set(name, register);
+      // The settings shell declares settings.section.icon when its own entry
+      // mounts, so that slot stays pending here until a test declares it.
+      if (name !== "settings.section.icon") register();
+      return () => {};
+    },
     register: (descriptor, render) => slotRegistrations.push({ descriptor, render }),
   },
 });
@@ -411,12 +434,58 @@ check("F2+ the REAL 0.2.0 typert-registry accepts the client contribution", () =
 });
 
 check("F3 the settings page registers under settings.section after 模型", () => {
-  assert.equal(slotRegistrations.length, 1);
-  const { descriptor } = slotRegistrations[0];
-  assert.equal(descriptor.name, "settings.section");
+  assert.ok(slotInjects.includes("settings.section"), "the plugin never injected settings.section");
+  const section = slotRegistrations.find((r) => r.descriptor.name === "settings.section");
+  assert.ok(section, "no settings.section registration");
+  const { descriptor } = section;
   assert.equal(descriptor.id, "model-prompt-injector");
   assert.equal(descriptor.order, 12, "must sort after the built-in 模型 section (order 10)");
   assert.equal(descriptor.label(), "模型提示词");
+});
+
+check("F5 without the icon slot the legacy marker owns our own nav row", () => {
+  const marker = "data-dsh-model-prompt-injector-settings-nav";
+  const ours = navButtons.find((b) => b.textContent === "模型提示词");
+  assert.ok(ours, "the fake nav lost our row");
+  assert.notEqual(ours.attributes[marker], undefined, "our nav row must carry the legacy marker (DSH <= 0.2.1 path)");
+  for (const other of navButtons) {
+    if (other === ours) continue;
+    assert.equal(other.attributes[marker], undefined, "only our own nav row may be marked");
+  }
+});
+
+check("F6 declaring the icon slot withdraws the legacy marker (one glyph, not two)", () => {
+  const marker = "data-dsh-model-prompt-injector-settings-nav";
+  const declareIconSlot = slotInjectCallbacks.get("settings.section.icon");
+  assert.ok(declareIconSlot, "the plugin never waited for the settings.section.icon slot");
+  declareIconSlot();
+  const ours = navButtons.find((b) => b.textContent === "模型提示词");
+  assert.equal(
+    ours.attributes[marker],
+    undefined,
+    "the legacy CSS marker must be withdrawn once the native icon exists, or the shell gear and our glyph both show",
+  );
+});
+
+check("F3+ the nav glyph registers under settings.section.icon with the section id", () => {
+  assert.ok(
+    slotInjects.includes("settings.section.icon"),
+    "the plugin never injected settings.section.icon (DSH >= 0.2.2-rc.1 nav icon slot)",
+  );
+  const icon = slotRegistrations.find((r) => r.descriptor.name === "settings.section.icon");
+  assert.ok(icon, "no settings.section.icon registration");
+  // The settings shell addresses the icon by the matching settings.section id
+  // (renderSlot('settings.section.icon', props, { only: row.id })), so a
+  // different id would silently keep the shell's default gear.
+  assert.equal(icon.descriptor.id, "model-prompt-injector", "the icon id must equal the section id");
+  assert.equal(icon.descriptor.order, 12);
+  assert.equal(icon.descriptor.label(), "模型提示词");
+  const element = icon.render({ size: 16, active: false });
+  assert.equal(element.type, "svg", "the nav icon must be an inline SVG element");
+  assert.equal(element.props.width, 16, "the shell asks for a 16px square icon");
+  assert.equal(element.props.height, 16);
+  assert.equal(element.props.stroke, "currentColor", "the icon must follow the nav row color");
+  assert.equal(element.props["aria-hidden"], "true", "the shell already marks the icon container decorative");
 });
 
 check("F4 the injected stylesheet is installed and disposed with the plugin", () => {

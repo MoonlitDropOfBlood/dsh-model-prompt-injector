@@ -24,6 +24,7 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
     const React = require("react");
     const ui = require("@deepseek-ai/dsh-client-ui-primitives");
+    const h = React.createElement;
 
     // ---- CSS (package-owned, DSH design tokens) ------------------------------
     const CSS = `
@@ -38,6 +39,7 @@ window.__ModuleLoader__.load({
 .mpi-state-off{color:var(--dsw-alias-label-secondary)}
 .mpi-empty{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px}
 .mpi-error{margin:4px 0 0;color:var(--dsw-alias-state-error-primary);font-size:12px}
+.mpi-warn{margin:4px 0 0;color:var(--dsw-alias-state-warn-primary);font-size:12px}
 .mpi-headrow{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .mpi-row{border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px;padding-bottom:2px}
 .mpi-row-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -49,26 +51,72 @@ window.__ModuleLoader__.load({
 .mpi-textarea:focus{outline:none;border-color:var(--dsw-alias-border-l3)}
 .mpi-actions{display:flex;gap:8px;align-items:center}
 
-/* Settings nav icon: DSH 0.1.x settings.section only projects id/order/
-   label, and the settings shell paints a generic gear for every external
-   section (client-ui-settings-general's navIcon()). registerSettingsNavIcon
-   marks our own nav row; hide the shell's gear and draw the
-   message-square-plus Lucide glyph as a currentColor mask so it follows the
-   native nav hover/active colors without changing the shell's icon rhythm. */
+/* Settings nav icon — LEGACY fallback for DSH <= 0.2.1 only.
+   On those hosts settings.section carries no icon field and the settings shell
+   paints one generic gear for every external section, so the legacy marker
+   (registerLegacySettingsNavIcon) claims our own nav row: hide the shell's
+   gear and draw the message-square-plus Lucide glyph as a currentColor mask.
+   Since DSH 0.2.2-rc.1 the shell owns the icon container (span.navIcon) and
+   renders the icon registered into the settings.section.icon slot, so the
+   marker is dropped as soon as that slot exists and these rules never apply
+   there — one glyph, never two. The :not(:has(span>svg)) guard keeps the
+   legacy glyph from doubling up with a wrapped icon if the native path is
+   unavailable on a newer host. */
 [data-dsh-model-prompt-injector-settings-nav]>svg:first-child{display:none}
-[data-dsh-model-prompt-injector-settings-nav]::before{content:'';flex:none;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3Cpath d='M12 7v6'/%3E%3Cpath d='M9 10h6'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3Cpath d='M12 7v6'/%3E%3Cpath d='M9 10h6'/%3E%3C/svg%3E") center/contain no-repeat}
+[data-dsh-model-prompt-injector-settings-nav]:not(:has(span>svg))::before{content:'';flex:none;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3Cpath d='M12 7v6'/%3E%3Cpath d='M9 10h6'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3Cpath d='M12 7v6'/%3E%3Cpath d='M9 10h6'/%3E%3C/svg%3E") center/contain no-repeat}
 `;
 
     // ---- Settings nav icon ----------------------------------------------------
-    // DSH 0.1.x does not yet carry an icon through the settings.section
-    // registration contract: its shell projects only id/order/label and paints
-    // a generic gear for every external section. Mark only this plugin's
-    // localized nav row so the CSS above can replace the fallback gear; the
-    // disposer clears the marker for HMR / plugin disable.
+    // DSH 0.2.2-rc.1 added the `settings.section.icon` slot: a plugin registers
+    // one icon component under the SAME id as its `settings.section` entry and
+    // the settings shell renders it inside its own icon wrapper (span.navIcon);
+    // ids without a registration keep the shell's default gear. Older hosts do
+    // not declare that slot at all, so `ctx.slots.inject` there never fires and
+    // the legacy CSS fallback keeps drawing our glyph instead.
     const SETTINGS_LABEL = "模型提示词";
+    const SETTINGS_SECTION_ID = "model-prompt-injector";
+    const SETTINGS_ICON_SLOT = "settings.section.icon";
     const SETTINGS_NAV_MARKER = "data-dsh-model-prompt-injector-settings-nav";
+    /** Native-mode state: `native` flips once the host declared the icon slot. */
+    const navIcon = { native: false, syncLegacy: null };
 
-    function registerSettingsNavIcon(label) {
+    /**
+     * Our nav glyph — the Lucide "message-square-plus" mark the legacy CSS mask
+     * used to paint, now a real SVG element. The shell owns the icon container
+     * and the theme owns the color (currentColor), so the row follows the same
+     * hover/active colors as every other settings entry.
+     */
+    function NavIcon(props) {
+      const size = props && props.size ? props.size : 16;
+      return h(
+        "svg",
+        {
+          xmlns: "http://www.w3.org/2000/svg",
+          width: size,
+          height: size,
+          viewBox: "0 0 24 24",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: 2,
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+          "aria-hidden": "true",
+          focusable: "false",
+          style: { display: "block", flex: "none" },
+        },
+        h("path", { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" }),
+        h("path", { d: "M12 7v6" }),
+        h("path", { d: "M9 10h6" }),
+      );
+    }
+
+    /**
+     * Legacy fallback (DSH <= 0.2.1): mark our own settings nav row so the CSS
+     * above replaces the shell's gear. The marker is dropped as soon as the
+     * native `settings.section.icon` slot shows up, so the two paths can never
+     * paint the same row.
+     */
+    function registerLegacySettingsNavIcon(label) {
       let disposed = false;
       const sync = function () {
         if (disposed) return;
@@ -77,19 +125,21 @@ window.__ModuleLoader__.load({
         for (let i = 0; i < buttons.length; i++) {
           const button = buttons[i];
           const text = button.textContent ? button.textContent.trim() : "";
-          if (currentLabel.length > 0 && text === currentLabel) {
+          if (!navIcon.native && currentLabel.length > 0 && text === currentLabel) {
             button.setAttribute(SETTINGS_NAV_MARKER, "");
           } else {
             button.removeAttribute(SETTINGS_NAV_MARKER);
           }
         }
       };
+      navIcon.syncLegacy = sync;
       sync();
       const observer = new MutationObserver(sync);
       observer.observe(document.body, { childList: true, subtree: true, characterData: true });
       return function () {
         disposed = true;
         observer.disconnect();
+        navIcon.syncLegacy = null;
         const marked = document.querySelectorAll("[" + SETTINGS_NAV_MARKER + "]");
         for (let i = 0; i < marked.length; i++) marked[i].removeAttribute(SETTINGS_NAV_MARKER);
       };
@@ -156,8 +206,26 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => styleTag.remove());
 
       // Mark our settings-nav row so the CSS above replaces the shell's
-      // fallback gear (no icon field exists in settings.section yet).
-      ctx.effect(() => registerSettingsNavIcon(SETTINGS_LABEL));
+      // fallback gear — but only on hosts without the icon slot (DSH <= 0.2.1).
+      ctx.effect(() => registerLegacySettingsNavIcon(SETTINGS_LABEL));
+
+      // Native nav icon (DSH >= 0.2.2-rc.1): the shell renders this component
+      // inside its own navIcon wrapper for our section id and skips its default
+      // gear entirely. Hosts that predate the slot never declare it, so this
+      // callback never runs there and the legacy CSS path stays in charge.
+      ctx.slots.inject(SETTINGS_ICON_SLOT, () => {
+        navIcon.native = true;
+        if (navIcon.syncLegacy) navIcon.syncLegacy();
+        return ctx.slots.register(
+          {
+            name: SETTINGS_ICON_SLOT,
+            id: SETTINGS_SECTION_ID,
+            order: 12,
+            label: () => SETTINGS_LABEL,
+          },
+          NavIcon,
+        );
+      });
 
       // ctx.get() reads the service without the property-accessor inject guard.
       const remote = ctx.get("remote.modelPromptInjector");
@@ -182,8 +250,6 @@ window.__ModuleLoader__.load({
         if (v && typeof v === "object" && v.ok === true) return v.value;
         return v;
       }
-
-      const h = React.createElement;
 
       /** Map rule key -> rule for O(1) row lookups. */
       function rulesByKey(rules) {
@@ -337,7 +403,17 @@ window.__ModuleLoader__.load({
       // ---- settings page (settings.section) -----------------------------------
 
       function Section() {
-        const [state, setState] = React.useState({ loading: true, rules: [], providers: [], error: "" });
+        const [state, setState] = React.useState({
+          loading: true,
+          rules: [],
+          providers: [],
+          // The Host reports WHY the provider/model directory could not be read
+          // (llm service missing, listProviders() threw, one provider's model
+          // catalog failed). It is OPTIONAL on the wire — the key is absent on
+          // the healthy path — so an empty string here means "no problem".
+          directoryError: "",
+          error: "",
+        });
         const [openKey, setOpenKey] = React.useState("");
 
         const load = function () {
@@ -349,18 +425,34 @@ window.__ModuleLoader__.load({
                 loading: false,
                 rules: Array.isArray(value.rules) ? value.rules : [],
                 providers: Array.isArray(value.providers) ? value.providers : [],
+                directoryError:
+                  typeof value.directoryError === "string" ? value.directoryError : "",
                 error: "",
               });
             })
             .catch((e) => {
-              setState({ loading: false, rules: [], providers: [], error: "读取配置失败：" + (e && e.message ? e.message : String(e)) });
+              setState({
+                loading: false,
+                rules: [],
+                providers: [],
+                directoryError: "",
+                error: "读取配置失败：" + (e && e.message ? e.message : String(e)),
+              });
             });
         };
 
         React.useEffect(load, []);
 
         const applyRules = function (rules) {
-          setState((current) => ({ loading: false, rules, providers: current.providers, error: "" }));
+          // Keep the directory verdict: saving a rule must not silently drop
+          // the reason the directory was incomplete.
+          setState((current) => ({
+            loading: false,
+            rules,
+            providers: current.providers,
+            directoryError: current.directoryError,
+            error: "",
+          }));
         };
         const toggle = function (key) {
           setOpenKey((current) => (current === key ? "" : key));
@@ -372,10 +464,15 @@ window.__ModuleLoader__.load({
         } else if (state.error) {
           body = h("p", { className: "mpi-error" }, state.error);
         } else if (state.providers.length === 0) {
-          body = h("p", { className: "mpi-empty" }, "未找到本地已配置的服务商，请先在「模型」设置中添加服务商与模型。");
+          // A failed read is NOT "you configured no provider": show the Host's
+          // reason instead of sending the user to configure a provider that
+          // may well be there already.
+          body = state.directoryError
+            ? h("p", { className: "mpi-error" }, "无法读取服务商目录：" + state.directoryError)
+            : h("p", { className: "mpi-empty" }, "未找到本地已配置的服务商，请先在「模型」设置中添加服务商与模型。");
         } else {
           const ruleMap = rulesByKey(state.rules);
-          body = state.providers.map((info) =>
+          const cards = state.providers.map((info) =>
             h(ProviderCard, {
               key: info.provider,
               info,
@@ -385,6 +482,17 @@ window.__ModuleLoader__.load({
               onSaved: applyRules,
             }),
           );
+          // Partial failure: the directory is usable, but one provider's model
+          // catalog is missing — say so, and keep listing the others.
+          body = state.directoryError
+            ? [
+                h(
+                  "p",
+                  { key: "mpi-directory-warning", className: "mpi-warn" },
+                  "服务商目录部分读取失败（其余服务商照常显示）：" + state.directoryError,
+                ),
+              ].concat(cards)
+            : cards;
         }
 
         return h(
@@ -407,7 +515,7 @@ window.__ModuleLoader__.load({
 
       ctx.slots.inject("settings.section", () =>
         ctx.slots.register(
-          { name: "settings.section", id: "model-prompt-injector", order: 12, label: () => SETTINGS_LABEL },
+          { name: "settings.section", id: SETTINGS_SECTION_ID, order: 12, label: () => SETTINGS_LABEL },
           () => h(Section),
         ),
       );

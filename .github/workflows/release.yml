@@ -104,6 +104,10 @@ jobs:
             - 设置 →「模型提示词」页逐模型管理：自动列出本地已配置的服务商与模型，添加/编辑/清除即时生效。
             - 规则持久化在 `<DSH_HOME>/model-prompt-injector/config.json`，重启不丢。
 
+            ### 本次更新
+            - **服务商/模型目录读取失败不再静默**：宿主读取服务商目录失败时（`llm` 服务未挂载、`listProviders()` 抛异常、单个服务商的模型列表读取失败），设置页直接显示具体原因，并把原因随 `getState` 的可选字段 `directoryError` 返回；「llm 服务不可用」「没配置服务商」「某个服务商读取失败」三者不再混淆。
+            - 设置导航图标适配 DSH ≥ 0.2.2-rc.1 的官方 `settings.section.icon` 插槽（≤ 0.2.1 继续走 legacy CSS 兜底，两条路径互斥，不会出现双图标）。
+
             ### 📦 安装（标准 DSH bundle）
             ```bash
             dsh plugin --profile web add @duke-dsh-plugins/dsh-model-prompt-injector --registry=https://registry.npmjs.org

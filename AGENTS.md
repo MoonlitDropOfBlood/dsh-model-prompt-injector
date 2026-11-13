@@ -55,6 +55,12 @@ dsh-model-prompt-injector/
 - 语义变化：只列**活动** provider（有 adapter 的路由）。规则只对真正服务的路由生效，这是有意的收窄；`active` 恒为 true（字段保留兼容 typert schema）。
 - 0.1.5 时代的三件套（`llm.listConfigurableProviders()` 拿目录项 `{provider, displayName, settingsNs, settingsPath}`、`settings.get(ns)` 判已配置、`[...settingsPath, "models"]` 读模型）仅适用于 ≤ 0.1.5-rc.3；`listConfigurableProviders` 在 rc.2 仍在但新增 `declared` 字段且不再适合做已配置判定。
 - pi-ai 家族的路由 id 由用户 profile 键生成（如 `minimax-cn`、`zai-coding-cn`），**不要硬编码猜测**。
+- **目录读取失败必须可见（1.3.0 起）**：`_directory()` 现在返回 `{ providers, error }`，`error === null` 表示健康路径。`getState()` 把 `error` 挂成 `value.directoryError`——**可选字段，只在目录读取失败时出现；健康路径下该 key 完全不存在**（不是 `undefined` 占位），故正常路径的 wire 形状逐字节不变。`typert.host.js` 的 `stateValueSchema` 必须声明 `directoryError: z.string().optional()`（zod 的 `z.object()` 会**静默剥掉**未声明的 key，不是报错）。三类原因**互不混淆**：
+  - `llm` 服务未挂载 → 「llm 服务不可用：宿主未挂载 llm 服务…」（**≠ 用户没配置服务商**）；
+  - `llm.listProviders()` 抛异常 → 「读取服务商列表失败：<异常 message>」；
+  - 单个 provider 的 `listModels()` 失败 → 只有**该** provider 的 models 为空，**其余 provider 照常列出**，原因里点名该 provider 并带异常 message。
+  - 「provider 列表本来就是空的」（用户确实没配）→ **不带** `directoryError`，必须与「读取失败」保持可区分。`typeof llm.listProviders !== "function"` 的守卫把意外的旧宿主也变成显式原因（声明范围 `>=0.1.5-rc.2` 的所有 dsh-llm 版本其实都有 `listProviders`/`listModels`，兜底只是防意外）。
+  - 失败原因同时经 `ctx.logger("model-prompt-injector").warn()` 落宿主日志（logger 可选，缺失/抛错都不能影响设置页）。
 
 ### 4. Remote 三处同步
 
@@ -66,6 +72,8 @@ wire 变更必须三处一起改：
 
 Client 侧 zod 不可用，codec 用 passthrough schema（`{ parse: (v) => v }`）且**必须同时带 `create: () => schema` 工厂**（0.1.7-rc.1+ 的 client Remote 注册表校验 `create`，缺失时 `$mount` 抛 "strict codec has no create() factory"，见 §9）；返回值经 `pick()` 做双层信封解包。
 
+- **第三腿不能漏（1.3.0 教训）**：host 侧新增 `directoryError` 这类「诊断字段」时，**只改 index.js + typert.host.js 不算完成**——client 侧必须真的把这个字段从 `load()` 的返回值**取进 state**（`load()` 过去只取 `rules`/`providers`，新字段会被静默丢掉）并在 UI 上呈现，否则 host 报出的原因永远到不了用户，用户看到的仍是「静默失败」。反之 client 侧展示也不能只改 UI：`pick()` 只判 `ok`/`value`/`error`，新增可选字段不会破坏它，但 `state` 初始值、`catch` 分支与 `applyRules` 的 `setState` 都要**带上该字段**，否则保存规则会把诊断信息抹掉（`applyRules` 用 `setState(current => …)`，漏带即丢）。判据：host 报出的每一种失败，用户在设置页都必须能看见对应的一句原因。
+
 ### 5. Client 约定
 
 - `window.__ModuleLoader__.load({ id, factory })`；`exports.inject = ["slots", "remote"]`；`await ctx.remote.$mount(CLIENT_REMOTE)` 自挂载命名空间（dsh-api-remotes 只挂官方命名空间）。
@@ -73,7 +81,7 @@ Client 侧 zod 不可用，codec 用 passthrough schema（`{ parse: (v) => v }`�
 - 按钮一律官方 Button 原子（`require("@deepseek-ai/dsh-client-ui-primitives")`，`variant: "primary"|"outline"|"ghost"`），样式一律 `--dsw-alias-*` token。
 - CSS 注入：`document.createElement("style")` + `ctx.effect(() => () => styleTag.remove())`。
 - 设置页 Slot：`settings.section`，id `model-prompt-injector`，order 12（models=10 之后），label `() => "模型提示词"`。
-- 设置导航图标：`settings.section` 不投影图标字段（外壳统一画齿轮），用 MutationObserver 给文本等于 label 的 nav 行打 `data-dsh-model-prompt-injector-settings-nav` 标记，CSS 隐藏齿轮并以 currentColor mask 画 Lucide message-square-plus。换图标只需替换 CSS data URI 里的 SVG。
+- 设置导航图标：**DSH ≥ 0.2.2-rc.1 走官方 `settings.section.icon` 插槽**（id 必须与 `settings.section` 条目相同；组件收到 `{size, active}`；外壳把它渲染进自己的 `span.navIcon` 容器，没注册的 id 继续用默认齿轮）。**DSH ≤ 0.2.1 才走 legacy CSS**：MutationObserver 给文本等于 label 的 nav 行打 `data-dsh-model-prompt-injector-settings-nav` 标记，CSS 隐藏齿轮并以 currentColor mask 画 Lucide message-square-plus；legacy 标记一旦发现原生图标插槽就撤销，两条路径互斥（否则一个图标变两个）。换图标改 `NavIcon` 组件里的 SVG path（原生路径）或 CSS data URI 里的 SVG（legacy 路径）。
 
 ### 6. 标准安装 = dsh bundle
 
@@ -127,6 +135,19 @@ npm install --no-save --registry=https://registry.npmjs.org @deepseek-ai/cordis@
 - **客户端 Remote 真身**：`$mount` 实现在 `@deepseek-ai/dsh-api-gateway` client（`mountContribution` → `ctx.typert.remotes.register(contribution)`）；registry 是 `@deepseek-ai/dsh-typert-registry` 的 client bundle（同为 `window.__ModuleLoader__.load` 包装，e2e 可直接加载宿主副本驱动）。0.2.0-rc.1 strict codec 校验 = `typeSymbol` + `create()`（不再看 `schema.parse`）；descriptor 必填面不变（id/service/namespace/method/invocation/parameters/result）。e2e F2+ 用真实 registry 挂载本插件 contribution 全绿。
 - **顺带修复的真 bug（e2e 在慢 FS 上实测复现）**：`_persist()` 并发 fire-and-forget `writeFile` 会**撕裂 config.json**（两次写交错）。已改为单 promise 链串行写（`_persistChain`），最后一条规则的 payload 必然最后落盘。快速连续点保存/清除的 UI 操作即可触发。
 - **测试基建修正**：`check()` 现按注册顺序 await async 用例体（失败在当场抛出，而不是漂移成 unhandled rejection）；D5 轮询持久化**内容**而非文件存在性（setRule 先于落盘返回是设计行为）。`npm test` 已包含 `test/host-compat.e2e.mjs`。
+
+## 11. DSH 0.2.2-rc.1 兼容性：官方 `settings.section.icon` 插槽 + 双图标事故（2026-11-04 验证，e2e 20/20）
+
+- **宿主版本**：桌面安装目录全套 `0.2.2-rc.1`（`dsh` / `dsh-typert-protocol` / `dsh-llm` / `dsh-client-ui-*`），cordis 已到 **4.1.0**（e2e 输出 `host e2e — dsh 0.2.2-rc.1 (cordis 4.1.0)`）。注入链路、Remote 契约、SYSTEM_PROMPT order 均无变化，**唯一真代码影响是设置导航图标**。
+- **新插槽 `settings.section.icon`**（契约见 `dsh-client-ui-settings/lib/types/client/contract/slots.d.ts`，声明方 = `sidebar.settings` 条目）：
+  - 注册项 `{ name, id, order, label }`，**`id` 必须等于对应 `settings.section` 条目的 id**——外壳按 `renderSlot('settings.section.icon', {size, active}, { only: row.id, fallback: navIcon(row.id) })` 取用（`dsh-client-ui-settings-general/lib/client.js`）；id 不匹配的贡献**永远不渲染**。
+  - 组件收到 owner props `{ size: number, active: boolean }`；`label` 不显示；外壳拥有按钮、标签与**装饰性图标容器**。
+  - **没有匹配注册时外壳才画默认齿轮**（内置分区各有自己的图标，其他 id 用齿轮）。渲染器对 list 槽的 `only` 过滤在 `dsh-client-ui-renderer/lib/client.js`：`list.filter(item => item.id === opts.only)`，过滤后为空 → 渲染 `opts.fallback`。
+- **双图标事故根因**：0.2.2-rc.1 起外壳把菜单图标包进 `span.navIcon`（CSS Module 类名 `VOzbGW_navIcon`，**每次构建可能变**，不能按字面类名写 CSS）。旧插件的 `button > svg:first-child{display:none}` 不再匹配齿轮 → 齿轮没被隐藏，而我们 CSS 的 `::before` 遮罩图标照旧绘制 → **自定义图标与核心齿轮同时显示**。
+- **修复（1.2.3）**：`client.js` 改为官方插槽注册 `settings.section.icon`（id 与 section 同为 `model-prompt-injector`），图标是内联 SVG（Lucide message-square-plus，`stroke="currentColor"`、`size` 取 owner props），外壳不再画齿轮；**legacy CSS 降级为 ≤0.2.1 专用且与原生路径互斥**——`navIcon.native` 标志一旦被原生插槽回调置真，MutationObserver 立刻撤销 `data-dsh-model-prompt-injector-settings-nav` 标记，两条路径不会同时生效。legacy `::before` 另加 `:not(:has(span>svg))` 兜底，万一在新宿主上原生路径失效也只显示一个图标。
+- **`ctx.slots.inject` 对未知 key 的行为（实测源码）**：`dsh-client-ui-renderer/lib/client.js` 的 `SlotRegistry.inject()` 用 `this._core.specDynamic(key)` + `subscribeDeclaration`——**未知/未声明的 key 不抛错，只是回调永不触发**。因此「在 ≤0.2.1 上也调 `ctx.slots.inject('settings.section.icon', …)`」是安全的（旧宿主静默忽略），无需版本判断或 try/catch。
+- **peer 范围必须补 `^0.2.2-rc.1`**：semver 实测 `^0.2.1-rc.0` **不满足** `0.2.2-rc.1`（§8 的 prerelease 陷阱：比较子里没有 0.2.2 同 tuple 的 prerelease 项），pnpm peer 校验会拒装；宿主闸门 `evaluatePluginCompatibility` 用 includePrerelease 所以**放行不代表能装**。已在 typert-protocol 与 dsh-llm 两个 peer 范围加 `|| ^0.2.2-rc.1`（`engines.dsh` 不用改，市场用 includePrerelease）。
+- **测试基建**：e2e 的 client stub 原本 `inject: (_name, register) => register()`（无视槽名直接触发回调），现改为记录槽名到 `slotInjects` 并新增 **F3+** 用例：断言注册了 `settings.section.icon`、id 与 section 相同、order 12、label 一致，且渲染出的元素是 `svg`（16px、`currentColor`、`aria-hidden`）。F3 改为按 name 查找条目，不再假设只有一个注册。
 
 ## 发布
 

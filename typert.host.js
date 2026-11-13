@@ -59,6 +59,12 @@ const stateValueSchema = z
   .object({
     rules: z.array(ruleSchema).readonly(),
     providers: z.array(targetProviderSchema).readonly(),
+    // OPTIONAL: present only when the provider/model directory could not be
+    // read (llm service missing, listProviders() threw, one provider's model
+    // catalog failed). Absent on the healthy path, so a normal snapshot keeps
+    // exactly the same wire shape as before. Declared here because the
+    // strict zod object would otherwise strip the unknown key.
+    directoryError: z.string().optional(),
   })
   .readonly();
 
@@ -166,9 +172,10 @@ export const TYPERT = {
             kind: "method",
             name: "getState",
             signature: "@Remote('getState') async getState(): Promise<ModelPromptInjectorStateResult>",
-            summary: "Snapshot for the Settings page (rule table + configured provider/model directory).",
+            summary:
+              "Snapshot for the Settings page (rule table + configured provider/model directory).",
             jsDoc:
-              "/**\n * Return the persisted rule table plus the directory of locally configured providers and their models.\n * @returns success or a business failure.\n */",
+              "/**\n * Return the persisted rule table plus the directory of locally configured providers and their models.\n * `value.directoryError` is present only when the directory could not be read (llm service missing,\n * listProviders() threw, or one provider's model catalog failed); it explains the degradation and\n * is absent on the healthy path.\n * @returns success or a business failure.\n */",
           },
           {
             kind: "method",
@@ -204,7 +211,7 @@ export const TYPERT = {
           {
             name: "ModelPromptInjectorStateValue",
             declaration:
-              "export interface ModelPromptInjectorStateValue {\n    readonly rules: readonly ModelPromptInjectorRule[];\n    readonly providers: readonly ModelPromptInjectorTargetProvider[];\n}",
+              "export interface ModelPromptInjectorStateValue {\n    readonly rules: readonly ModelPromptInjectorRule[];\n    readonly providers: readonly ModelPromptInjectorTargetProvider[];\n    readonly directoryError?: string;\n}",
           },
           {
             name: "ModelPromptInjectorStateResult",
