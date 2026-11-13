@@ -87,7 +87,9 @@ const noticeText = switched.messages[1].content[0].text;
 assert.ok(noticeText.startsWith("[model prompt rules:"), "switch header");
 assert.ok(noticeText.includes("m1 → m2"), "route labels in header");
 assert.ok(noticeText.includes("BASE"), "rules in notice body");
-assert.equal(switched.messages[1].source.plugin, "model-prompt-injector");
+// Session format v4 rejects the retired `{ kind: "plugin", plugin }` wrapper.
+assert.equal(switched.messages[1].source.kind, "plugin:model-prompt-injector", "producer-owned source kind");
+assert.ok(!("plugin" in switched.messages[1].source), "no retired plugin field");
 assert.equal(textOf(agent), "", "section quiet after notice delivery");
 
 // ---- 5. no notice when nothing changed ---------------------------------------
@@ -111,6 +113,7 @@ agent.options.provider = "q";
 const cleared = await admit({ agent, signal: {} });
 assert.equal(cleared.messages.length, 2, "clear notice appended");
 assert.ok(cleared.messages[1].content[0].text.startsWith("[model prompt rules cleared:"), "clear header");
+assert.equal(cleared.messages[1].source.kind, "plugin:model-prompt-injector", "clear notice source kind");
 assert.equal(textOf(agent), "");
 
 // ---- 8. gates -----------------------------------------------------------------
